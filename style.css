@@ -652,13 +652,13 @@ textarea { resize: vertical; min-height: 44px; }
 
 .kpis {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   margin-bottom: 24px;
 }
 
 @media (max-width: 720px) {
-  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .kpis { grid-template-columns: 1fr; }
 }
 
 .kpi {
@@ -685,7 +685,6 @@ textarea { resize: vertical; min-height: 44px; }
   color: var(--text-dim);
 }
 
-.kpi--critico .kpi__value { color: var(--critico); }
 .kpi--pendente .kpi__value { color: var(--status-pendente); }
 .kpi--pronta .kpi__value { color: var(--status-pronta); }
 

@@ -804,7 +804,6 @@ function buildSimulaCard(s, viewAs) {
 // ---------------------------------------------------------------------
 
 const kpiTotal = document.getElementById("kpiTotal");
-const kpiCriticas = document.getElementById("kpiCriticas");
 const kpiPendentes = document.getElementById("kpiPendentes");
 const kpiProntas = document.getElementById("kpiProntas");
 
@@ -815,14 +814,10 @@ const kanbanCols = {
 
 function renderComando() {
   const total = injecoesCache.length;
-  const criticasPendentes = injecoesCache.filter(
-    (it) => it.urgencia === "critico" && statusPms(it) === "pendente"
-  ).length;
   const pendentes = injecoesCache.filter((it) => statusPms(it) === "pendente").length;
   const prontas = total - pendentes;
 
   kpiTotal.textContent = total;
-  kpiCriticas.textContent = criticasPendentes;
   kpiPendentes.textContent = pendentes;
   kpiProntas.textContent = prontas;
 
