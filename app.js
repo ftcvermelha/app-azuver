@@ -20,18 +20,13 @@ import {
   deleteDoc,
   doc,
   arrayUnion,
+  getDoc,
+  Bytes,
   onSnapshot,
   query,
   orderBy,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import {
-  getStorage,
-  ref as storageRef,
-  uploadBytes,
-  getDownloadURL,
-  deleteObject
-} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-storage.js";
 
 // ---------------------------------------------------------------------
 // Firebase init
@@ -40,7 +35,6 @@ import {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const storage = getStorage(app);
 
 let currentUid = null;
 
@@ -170,11 +164,15 @@ function validateRequiredFields(fields) {
 }
 
 // ---------------------------------------------------------------------
-// Anexos (DOCX/PDF) — Firebase Storage
-// Os metadados ficam no documento do PMS: { nome, path, url, tamanho }.
+// Anexos (DOCX/PDF) — guardados no próprio Firestore (plano gratuito),
+// fatiados em partes de até 900 KB, pois cada documento tem limite de 1 MiB:
+//   arquivos/<id>               { nome, tipo, tamanho, partes }
+//   arquivos/<id>/partes/<n>    { dados: Bytes }
+// O PMS guarda só a referência: { nome, arquivoId, tamanho }.
 // ---------------------------------------------------------------------
 
-const ANEXO_MAX_BYTES = 20 * 1024 * 1024; // 20 MB (espelhado em storage.rules)
+const ANEXO_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const ANEXO_PARTE_BYTES = 900 * 1024;
 const ANEXO_TIPOS = {
   pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -185,18 +183,61 @@ const ANEXO_ACCEPT = ".pdf,.docx," + Object.values(ANEXO_TIPOS).join(",");
 function validateAnexo(file) {
   const ext = file.name.split(".").pop().toLowerCase();
   if (!ANEXO_TIPOS[ext]) return "Apenas arquivos DOCX ou PDF são aceitos.";
-  if (file.size > ANEXO_MAX_BYTES) return "Arquivo maior que 20 MB.";
+  if (file.size > ANEXO_MAX_BYTES) return "Arquivo maior que 10 MB.";
   return null;
 }
 
-async function uploadAnexo(file, pasta) {
+async function uploadAnexo(file) {
   const ext = file.name.split(".").pop().toLowerCase();
-  const nomeSeguro = file.name.replace(/[^\w.\-]+/g, "_");
-  const path = `${pasta}/${Date.now()}_${nomeSeguro}`;
-  const fileRef = storageRef(storage, path);
-  await uploadBytes(fileRef, file, { contentType: ANEXO_TIPOS[ext] });
-  const url = await getDownloadURL(fileRef);
-  return { nome: file.name, path, url, tamanho: file.size };
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const partes = Math.max(1, Math.ceil(bytes.length / ANEXO_PARTE_BYTES));
+  const arquivoRef = doc(collection(db, "arquivos"));
+
+  for (let i = 0; i < partes; i++) {
+    const fatia = bytes.subarray(i * ANEXO_PARTE_BYTES, (i + 1) * ANEXO_PARTE_BYTES);
+    await setDoc(doc(arquivoRef, "partes", String(i)), { dados: Bytes.fromUint8Array(fatia) });
+  }
+  // Metadados por último: só existem quando todas as partes já foram gravadas.
+  await setDoc(arquivoRef, {
+    nome: file.name,
+    tipo: ANEXO_TIPOS[ext],
+    tamanho: file.size,
+    partes,
+    createdAt: serverTimestamp()
+  });
+
+  return { nome: file.name, arquivoId: arquivoRef.id, tamanho: file.size };
+}
+
+async function downloadAnexo(arquivoId) {
+  const arquivoRef = doc(db, "arquivos", arquivoId);
+  const meta = await getDoc(arquivoRef);
+  if (!meta.exists()) throw new Error("Arquivo não encontrado.");
+  const { nome, tipo, partes } = meta.data();
+
+  const snaps = await Promise.all(
+    Array.from({ length: partes }, (_, i) => getDoc(doc(arquivoRef, "partes", String(i))))
+  );
+  const blob = new Blob(snaps.map((p) => p.data().dados.toUint8Array()), { type: tipo });
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nome;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function deleteAnexo(anexo) {
+  const arquivoRef = doc(db, "arquivos", anexo.arquivoId);
+  const meta = await getDoc(arquivoRef);
+  const partes = meta.exists() ? meta.data().partes : 0;
+  await deleteDoc(arquivoRef);
+  await Promise.all(
+    Array.from({ length: partes }, (_, i) => deleteDoc(doc(arquivoRef, "partes", String(i))))
+  );
 }
 
 function formatBytes(n) {
@@ -206,9 +247,27 @@ function formatBytes(n) {
 }
 
 function anexoLinkHtml(anexo) {
-  return `<a class="anexo-link" href="${escapeHtml(anexo.url)}" target="_blank" rel="noopener">` +
-    `${escapeHtml(anexo.nome)}</a> <span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span>`;
+  return `<span><button type="button" class="anexo-link" data-arquivo-id="${escapeHtml(anexo.arquivoId)}">` +
+    `${escapeHtml(anexo.nome)}</button> <span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span></span>`;
 }
+
+// Delegação: qualquer link de anexo na página dispara o download.
+document.addEventListener("click", async (e) => {
+  const link = e.target.closest(".anexo-link[data-arquivo-id]");
+  if (!link || link.disabled) return;
+  const textoOriginal = link.textContent;
+  link.disabled = true;
+  link.textContent = "Baixando...";
+  try {
+    await downloadAnexo(link.dataset.arquivoId);
+  } catch (err) {
+    console.error("Erro ao baixar anexo:", err);
+    window.alert("Erro ao baixar o arquivo. Tente novamente.");
+  } finally {
+    link.disabled = false;
+    link.textContent = textoOriginal;
+  }
+});
 
 // ---------------------------------------------------------------------
 // Formulário: Novo PMS (coleção "injecoes")
@@ -313,15 +372,13 @@ formNovaInjecao.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
 
   try {
-    // Gera o id antes para que o anexo fique em pms/<id>/...
-    const novoRef = doc(collection(db, "injecoes"));
     let anexo = null;
     if (inAnexo.files[0]) {
       novaInjecaoMsg.textContent = "Enviando arquivo...";
-      anexo = await uploadAnexo(inAnexo.files[0], `pms/${novoRef.id}/anexo`);
+      anexo = await uploadAnexo(inAnexo.files[0]);
     }
 
-    await setDoc(novoRef, {
+    await addDoc(collection(db, "injecoes"), {
       gdh,
       origem,
       autor,
@@ -519,7 +576,7 @@ function buildInjecaoCard(it, viewAs) {
     respostaFile.disabled = true;
     respostaMsg.textContent = "Enviando arquivo...";
     try {
-      const anexo = await uploadAnexo(file, `pms/${it.id}/respostas/${celula}`);
+      const anexo = await uploadAnexo(file);
       await updateDoc(doc(db, "injecoes", it.id), {
         respostas: arrayUnion({ ...anexo, celula, enviadoEm: Date.now() })
       });
@@ -542,9 +599,9 @@ function buildInjecaoCard(it, viewAs) {
     btnExcluir.disabled = true;
     try {
       await deleteDoc(doc(db, "injecoes", it.id));
-      const arquivos = [it.anexo, ...(it.respostas || [])].filter((a) => a && a.path);
+      const arquivos = [it.anexo, ...(it.respostas || [])].filter((a) => a && a.arquivoId);
       // Melhor esforço: falha ao apagar um arquivo não impede a exclusão do PMS.
-      await Promise.allSettled(arquivos.map((a) => deleteObject(storageRef(storage, a.path))));
+      await Promise.allSettled(arquivos.map(deleteAnexo));
     } catch (err) {
       console.error("Erro ao excluir PMS:", err);
       btnExcluir.disabled = false;
