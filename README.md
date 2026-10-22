@@ -1,13 +1,13 @@
-# Painel EM 3 · AZUVER
+# Painel FTC · AZUVER
 
-Ferramenta de apoio para um Estado-Maior Conjunto (EM 3, lado **VERMELHO**)
+Ferramenta de apoio para um Estado-Maior Conjunto (FTC, país **VERMELHO**)
 durante o exercício de simulação **AZUVER**, na ECEME (Escola de Comando e
 Estado-Maior do Exército).
 
 Aplicativo web **estático** — HTML + CSS + JS puro, sem build step, sem
 npm/webpack/Node. Funciona hospedado diretamente no GitHub Pages. Os dados
 são compartilhados em tempo real entre todos os usuários via Firebase
-Firestore.
+Firestore, e os anexos (DOCX/PDF) ficam no Firebase Storage.
 
 ## Estrutura
 
@@ -17,6 +17,7 @@ style.css            tema visual (sala de operações, escuro/claro)
 app.js                lógica da aplicação (Firebase, formulários, listas)
 firebase-config.js   credenciais do projeto Firebase (placeholders)
 firestore.rules      regras de segurança do Firestore
+storage.rules        regras de segurança do Storage (anexos DOCX/PDF, até 20 MB)
 ```
 
 ## Passo a passo para colocar no ar
@@ -71,6 +72,15 @@ Essas regras permitem leitura e escrita para qualquer usuário
 **autenticado** (inclusive anonimamente) — suficiente para uso interno do
 exercício, sem exigir login visível.
 
+### 3b. Ativar o Storage (anexos)
+
+1. O Storage exige o plano **Blaze** (pagamento por uso, com cota gratuita
+   de 5 GB armazenados e 1 GB/dia de download). Em **Uso e faturamento**,
+   faça o upgrade e crie um alerta de orçamento.
+2. Vá em **Build → Storage → Primeiros passos** e crie o bucket.
+3. Na aba **Regras** do Storage, cole o conteúdo de `storage.rules` e
+   clique em **Publicar**.
+
 ### 4. Ativar autenticação anônima
 
 1. Vá em **Build → Authentication → Sign-in method**.
@@ -124,10 +134,18 @@ usar o painel — não é necessário nenhum cadastro ou login manual.
     d9:   { sel: bool, texto: string },
     d10:  { sel: bool, texto: string }
   },
+  anexo: { nome, path, url, tamanho } | null,   // arquivo do PMS
+  respostas: [                                   // respostas das células
+    { nome, path, url, tamanho, celula, enviadoEm: number }, ...
+  ],
   status: "pendente" | "analise" | "decisao" | "pronta",
   createdAt: Timestamp
 }
 ```
+
+A coleção mantém o nome técnico `injecoes`, mas cada documento é um **PMS**.
+Os arquivos ficam no Storage em `pms/<id>/anexo/...` e
+`pms/<id>/respostas/<celula>/...`.
 
 ### Coleção `simulas`
 
@@ -158,10 +176,12 @@ usar o painel — não é necessário nenhum cadastro ou login manual.
 
 ## Telas
 
-1. **Nova Injeção** — registra uma injeção e roteia para as células
-   selecionadas, cada uma com seu próprio texto de orientação.
-2. **Injeções DIREX** — lista em tempo real, filtrável por status e pelo
-   seletor global "Ver como".
+1. **Novo PMS** — registra um PMS (com arquivo DOCX/PDF opcional) e roteia
+   para as células selecionadas, cada uma com seu próprio texto de
+   orientação.
+2. **Controle PMS** — lista em tempo real, filtrável por status e pelo
+   seletor global "Ver como". Cada PMS pode receber arquivos de resposta
+   das células (DOCX/PDF) e pode ser excluído (com os anexos).
 3. **Súmulas de Reunião** — registra decisões de reunião com impactos por
    célula; feed cronológico reverso.
 4. **Painel do Comando** — KPIs e quadro Kanban por status.

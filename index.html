@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>Painel EM 3 · AZUVER</title>
-<meta name="description" content="Painel EM 3 — ferramenta de apoio ao Estado-Maior Conjunto (lado VERMELHO) durante o exercício de simulação AZUVER, ECEME.">
+<title>Painel FTC · AZUVER</title>
+<meta name="description" content="Painel FTC — ferramenta de apoio ao Estado-Maior Conjunto (país VERMELHO) durante o exercício de simulação AZUVER, ECEME.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16,10 +16,10 @@
 
 <header class="topbar">
   <div class="topbar__brand">
-    <span class="brand__title">PAINEL EM 3</span>
+    <span class="brand__title">PAINEL FTC</span>
     <span class="brand__tag">AZUVER · ECEME</span>
   </div>
-  <div class="topbar__badge badge--vermelho">LADO VERMELHO</div>
+  <div class="topbar__badge badge--vermelho">PAÍS VERMELHO</div>
 
   <div class="topbar__viewas">
     <label for="viewAsSelect" class="viewas__label">Ver como</label>
@@ -44,18 +44,18 @@
 </header>
 
 <nav class="tabs" id="tabs">
-  <button class="tab tab--active" data-tab="nova">Nova Injeção</button>
-  <button class="tab" data-tab="direx">Injeções DIREX</button>
+  <button class="tab tab--active" data-tab="nova">Novo PMS</button>
+  <button class="tab" data-tab="direx">Controle PMS</button>
   <button class="tab" data-tab="simulas">Súmulas de Reunião</button>
   <button class="tab" data-tab="comando">Painel do Comando</button>
 </nav>
 
 <main id="app">
 
-  <!-- ================= TAB: NOVA INJEÇÃO ================= -->
+  <!-- ================= TAB: NOVO PMS ================= -->
   <section class="view view--active" id="view-nova">
     <form id="formNovaInjecao" class="card form-injecao" autocomplete="off">
-      <h2 class="section-title">Registrar Injeção</h2>
+      <h2 class="section-title">Registrar PMS</h2>
 
       <div class="grid grid--3">
         <div class="field">
@@ -72,6 +72,7 @@
         </div>
       </div>
 
+      <div class="urgencia-anexo-row">
       <div class="field">
         <label>Urgência</label>
         <div class="urgencia-group" id="urgenciaGroup">
@@ -91,8 +92,19 @@
       </div>
 
       <div class="field">
+        <label>Arquivo do PMS (opcional)</label>
+        <div class="anexo-picker">
+          <label class="btn btn--ghost btn--small anexo-picker__btn" for="inAnexo">Anexar arquivo (DOCX/PDF)</label>
+          <input type="file" id="inAnexo" class="anexo-picker__input" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+          <span id="inAnexoNome" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
+          <button type="button" id="inAnexoLimpar" class="impacto-row__remove" hidden>remover</button>
+        </div>
+      </div>
+      </div>
+
+      <div class="field">
         <label for="inResumo">Resumo da situação</label>
-        <textarea id="inResumo" rows="3" placeholder="Descreva sucintamente o fato/injeção..."></textarea>
+        <textarea id="inResumo" rows="3" placeholder="Descreva sucintamente o PMS..."></textarea>
       </div>
 
       <div class="field">
@@ -108,10 +120,10 @@
     </form>
   </section>
 
-  <!-- ================= TAB: INJEÇÕES DIREX ================= -->
+  <!-- ================= TAB: CONTROLE PMS ================= -->
   <section class="view" id="view-direx">
     <div class="toolbar">
-      <h2 class="section-title">Injeções DIREX</h2>
+      <h2 class="section-title">Controle PMS</h2>
       <div class="toolbar__filters">
         <label for="statusFilter" class="toolbar__label">Status</label>
         <select id="statusFilter" class="select-compact">
@@ -124,7 +136,7 @@
       </div>
     </div>
     <div id="direxList" class="cards-list">
-      <p class="empty-state">Carregando injeções...</p>
+      <p class="empty-state">Carregando PMS...</p>
     </div>
   </section>
 
@@ -178,7 +190,7 @@
     <div class="kpis" id="kpis">
       <div class="kpi">
         <span class="kpi__value" id="kpiTotal">0</span>
-        <span class="kpi__label">Total de Injeções</span>
+        <span class="kpi__label">Total de PMS</span>
       </div>
       <div class="kpi kpi--critico">
         <span class="kpi__value" id="kpiCriticas">0</span>

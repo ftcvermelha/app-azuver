@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /pms/{allPaths=**} {
+      allow read, delete: if request.auth != null;
+      // Somente DOCX/PDF de até 20 MB.
+      allow create, update: if request.auth != null
+        && request.resource.size < 20 * 1024 * 1024
+        && request.resource.contentType.matches(
+             'application/pdf|application/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document');
+    }
+  }
+}

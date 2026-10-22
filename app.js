@@ -1,5 +1,5 @@
 // =========================================================================
-// Painel EM 3 — app.js
+// Painel FTC — app.js
 // Vanilla JS + Firebase (modular SDK via CDN). Sem build step.
 // =========================================================================
 
@@ -15,13 +15,23 @@ import {
   getFirestore,
   collection,
   addDoc,
+  setDoc,
   updateDoc,
+  deleteDoc,
   doc,
+  arrayUnion,
   onSnapshot,
   query,
   orderBy,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-storage.js";
 
 // ---------------------------------------------------------------------
 // Firebase init
@@ -30,6 +40,7 @@ import {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 let currentUid = null;
 
@@ -159,7 +170,48 @@ function validateRequiredFields(fields) {
 }
 
 // ---------------------------------------------------------------------
-// Formulário: Nova Injeção
+// Anexos (DOCX/PDF) — Firebase Storage
+// Os metadados ficam no documento do PMS: { nome, path, url, tamanho }.
+// ---------------------------------------------------------------------
+
+const ANEXO_MAX_BYTES = 20 * 1024 * 1024; // 20 MB (espelhado em storage.rules)
+const ANEXO_TIPOS = {
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+};
+const ANEXO_ACCEPT = ".pdf,.docx," + Object.values(ANEXO_TIPOS).join(",");
+
+// Retorna mensagem de erro, ou null se o arquivo é aceitável.
+function validateAnexo(file) {
+  const ext = file.name.split(".").pop().toLowerCase();
+  if (!ANEXO_TIPOS[ext]) return "Apenas arquivos DOCX ou PDF são aceitos.";
+  if (file.size > ANEXO_MAX_BYTES) return "Arquivo maior que 20 MB.";
+  return null;
+}
+
+async function uploadAnexo(file, pasta) {
+  const ext = file.name.split(".").pop().toLowerCase();
+  const nomeSeguro = file.name.replace(/[^\w.\-]+/g, "_");
+  const path = `${pasta}/${Date.now()}_${nomeSeguro}`;
+  const fileRef = storageRef(storage, path);
+  await uploadBytes(fileRef, file, { contentType: ANEXO_TIPOS[ext] });
+  const url = await getDownloadURL(fileRef);
+  return { nome: file.name, path, url, tamanho: file.size };
+}
+
+function formatBytes(n) {
+  if (!n) return "";
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1).replace(".", ",")} MB`;
+}
+
+function anexoLinkHtml(anexo) {
+  return `<a class="anexo-link" href="${escapeHtml(anexo.url)}" target="_blank" rel="noopener">` +
+    `${escapeHtml(anexo.nome)}</a> <span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span>`;
+}
+
+// ---------------------------------------------------------------------
+// Formulário: Novo PMS (coleção "injecoes")
 // ---------------------------------------------------------------------
 
 const celulasGridNova = document.getElementById("celulasGridNova");
@@ -186,6 +238,33 @@ CELULAS.forEach((celula) => {
 
 const formNovaInjecao = document.getElementById("formNovaInjecao");
 const novaInjecaoMsg = document.getElementById("novaInjecaoMsg");
+const inAnexo = document.getElementById("inAnexo");
+const inAnexoNome = document.getElementById("inAnexoNome");
+const inAnexoLimpar = document.getElementById("inAnexoLimpar");
+
+function resetAnexoPicker() {
+  inAnexo.value = "";
+  inAnexoNome.textContent = "Nenhum arquivo selecionado";
+  inAnexoLimpar.hidden = true;
+}
+
+inAnexo.addEventListener("change", () => {
+  novaInjecaoMsg.textContent = "";
+  novaInjecaoMsg.classList.remove("error");
+  const file = inAnexo.files[0];
+  if (!file) return resetAnexoPicker();
+  const erro = validateAnexo(file);
+  if (erro) {
+    resetAnexoPicker();
+    novaInjecaoMsg.textContent = erro;
+    novaInjecaoMsg.classList.add("error");
+    return;
+  }
+  inAnexoNome.textContent = `${file.name} (${formatBytes(file.size)})`;
+  inAnexoLimpar.hidden = false;
+});
+
+inAnexoLimpar.addEventListener("click", resetAnexoPicker);
 
 formNovaInjecao.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -234,19 +313,30 @@ formNovaInjecao.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
 
   try {
-    await addDoc(collection(db, "injecoes"), {
+    // Gera o id antes para que o anexo fique em pms/<id>/...
+    const novoRef = doc(collection(db, "injecoes"));
+    let anexo = null;
+    if (inAnexo.files[0]) {
+      novaInjecaoMsg.textContent = "Enviando arquivo...";
+      anexo = await uploadAnexo(inAnexo.files[0], `pms/${novoRef.id}/anexo`);
+    }
+
+    await setDoc(novoRef, {
       gdh,
       origem,
       autor,
       urgencia,
       resumo,
       celulas,
+      anexo,
+      respostas: [],
       status: "pendente",
       createdAt: serverTimestamp()
     });
 
-    novaInjecaoMsg.textContent = "Injeção registrada e roteada.";
+    novaInjecaoMsg.textContent = "PMS registrado e roteado.";
     formNovaInjecao.reset();
+    resetAnexoPicker();
     CELULAS.forEach((c) => {
       const ref = celulaBlockRefs[c.id];
       ref.textarea.hidden = true;
@@ -254,7 +344,7 @@ formNovaInjecao.addEventListener("submit", async (e) => {
     });
     formNovaInjecao.querySelector('input[name="urgencia"][value="critico"]').checked = true;
   } catch (err) {
-    console.error("Erro ao registrar injeção:", err);
+    console.error("Erro ao registrar PMS:", err);
     novaInjecaoMsg.textContent = "Erro ao registrar. Tente novamente.";
     novaInjecaoMsg.classList.add("error");
   } finally {
@@ -263,7 +353,7 @@ formNovaInjecao.addEventListener("submit", async (e) => {
 });
 
 // ---------------------------------------------------------------------
-// Injeções DIREX — listagem + filtros
+// Controle PMS — listagem + filtros
 // ---------------------------------------------------------------------
 
 const direxList = document.getElementById("direxList");
@@ -296,7 +386,7 @@ function renderDirex() {
   direxList.innerHTML = "";
 
   if (items.length === 0) {
-    direxList.innerHTML = '<p class="empty-state">Nenhuma injeção encontrada para este filtro.</p>';
+    direxList.innerHTML = '<p class="empty-state">Nenhum PMS encontrado para este filtro.</p>';
     return;
   }
 
@@ -335,6 +425,44 @@ function buildInjecaoCard(it, viewAs) {
     }
   }
 
+  const anexoHtml = it.anexo
+    ? `<div class="anexo-block"><span class="anexo-block__label">Arquivo do PMS</span>${anexoLinkHtml(it.anexo)}</div>`
+    : "";
+
+  // Respostas: célula vê só as suas; Comando vê todas.
+  const celulasRoteadas = CELULAS.filter((c) => it.celulas && it.celulas[c.id] && it.celulas[c.id].sel);
+  let respostas = it.respostas || [];
+  if (!isCommandView(viewAs)) {
+    respostas = respostas.filter((r) => r.celula === viewAs);
+  }
+  const respostasItensHtml = respostas.map((r) => `
+    <div class="resposta-item">
+      <span class="celula-texto-block__label">${CELULA_MAP[r.celula] ? CELULA_MAP[r.celula].abrev : escapeHtml(r.celula)}</span>${anexoLinkHtml(r)}
+    </div>
+  `).join("");
+
+  // Seletor de célula só aparece na visão do Comando; na visão de uma
+  // célula, a resposta é atribuída a ela.
+  const celulaSelectHtml = isCommandView(viewAs)
+    ? `<select class="select-compact resposta-celula">${celulasRoteadas
+        .map((c) => `<option value="${c.id}">${c.abrev}</option>`).join("")}</select>`
+    : "";
+
+  const respostaHtml = `
+    <div class="resposta-block">
+      <span class="anexo-block__label">Respostas das células</span>
+      ${respostasItensHtml || '<span class="resposta-vazia">Nenhuma resposta anexada.</span>'}
+      <div class="resposta-upload">
+        ${celulaSelectHtml}
+        <label class="btn btn--ghost btn--small anexo-picker__btn">
+          Anexar resposta (DOCX/PDF)
+          <input type="file" class="anexo-picker__input resposta-file" accept="${ANEXO_ACCEPT}">
+        </label>
+        <span class="form-msg resposta-msg"></span>
+      </div>
+    </div>
+  `;
+
   card.innerHTML = `
     <div class="injecao-card__head">
       <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
@@ -344,14 +472,19 @@ function buildInjecaoCard(it, viewAs) {
     <div class="injecao-card__resumo">${escapeHtml(it.resumo || "")}</div>
     <div class="chips">${chipsHtml}</div>
     ${celulasTextoHtml}
+    ${anexoHtml}
+    ${respostaHtml}
     <div class="injecao-card__footer">
       <span class="injecao-card__autor">${it.autor ? "Autor: " + escapeHtml(it.autor) : ""} · ${formatTimestamp(it.createdAt)}</span>
+      <div class="injecao-card__actions">
+      <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
       <select class="select-compact status-select" data-id="${it.id}">
         <option value="pendente" ${it.status === "pendente" ? "selected" : ""}>Pendente</option>
         <option value="analise" ${it.status === "analise" ? "selected" : ""}>Em Análise</option>
         <option value="decisao" ${it.status === "decisao" ? "selected" : ""}>Decisão Necessária</option>
         <option value="pronta" ${it.status === "pronta" ? "selected" : ""}>Pronta / Expedida</option>
       </select>
+      </div>
     </div>
   `;
 
@@ -363,6 +496,59 @@ function buildInjecaoCard(it, viewAs) {
     } catch (err) {
       console.error("Erro ao atualizar status:", err);
       statusSelect.value = it.status;
+    }
+  });
+
+  const respostaFile = card.querySelector(".resposta-file");
+  const respostaMsg = card.querySelector(".resposta-msg");
+  respostaFile.addEventListener("change", async () => {
+    const file = respostaFile.files[0];
+    if (!file) return;
+    respostaMsg.classList.remove("error");
+
+    const celulaSelect = card.querySelector(".resposta-celula");
+    const celula = celulaSelect ? celulaSelect.value : viewAs;
+    const erro = !celula ? "Nenhuma célula roteada para este PMS." : validateAnexo(file);
+    if (erro) {
+      respostaMsg.textContent = erro;
+      respostaMsg.classList.add("error");
+      respostaFile.value = "";
+      return;
+    }
+
+    respostaFile.disabled = true;
+    respostaMsg.textContent = "Enviando arquivo...";
+    try {
+      const anexo = await uploadAnexo(file, `pms/${it.id}/respostas/${celula}`);
+      await updateDoc(doc(db, "injecoes", it.id), {
+        respostas: arrayUnion({ ...anexo, celula, enviadoEm: Date.now() })
+      });
+      // O listener em tempo real re-renderiza o cartão com a nova resposta.
+    } catch (err) {
+      console.error("Erro ao anexar resposta:", err);
+      respostaMsg.textContent = "Erro ao enviar. Tente novamente.";
+      respostaMsg.classList.add("error");
+      respostaFile.disabled = false;
+      respostaFile.value = "";
+    }
+  });
+
+  const btnExcluir = card.querySelector(".btn-excluir");
+  btnExcluir.addEventListener("click", async () => {
+    const ok = window.confirm(
+      `Excluir o PMS ${it.gdh || ""}? Os arquivos anexados também serão apagados. Esta ação não pode ser desfeita.`
+    );
+    if (!ok) return;
+    btnExcluir.disabled = true;
+    try {
+      await deleteDoc(doc(db, "injecoes", it.id));
+      const arquivos = [it.anexo, ...(it.respostas || [])].filter((a) => a && a.path);
+      // Melhor esforço: falha ao apagar um arquivo não impede a exclusão do PMS.
+      await Promise.allSettled(arquivos.map((a) => deleteObject(storageRef(storage, a.path))));
+    } catch (err) {
+      console.error("Erro ao excluir PMS:", err);
+      btnExcluir.disabled = false;
+      window.alert("Erro ao excluir. Tente novamente.");
     }
   });
 
@@ -617,7 +803,7 @@ function startListeners() {
       renderComando();
     },
     (err) => {
-      console.error("Erro no listener de injeções:", err);
+      console.error("Erro no listener de PMS:", err);
       setConn("offline");
     }
   );
