@@ -730,12 +730,18 @@ textarea { resize: vertical; min-height: 44px; }
 .kanban-card[data-urgencia="importante"] { border-left-color: var(--importante); }
 .kanban-card[data-urgencia="informativo"] { border-left-color: var(--informativo); }
 
+.kanban-card__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
 .kanban-card__gdh {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
-  display: block;
-  margin-bottom: 4px;
 }
 
 .kanban-card__resumo {

@@ -850,7 +850,10 @@ function buildKanbanCard(it) {
   }).join("");
 
   card.innerHTML = `
-    <span class="kanban-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
+    <div class="kanban-card__head">
+      <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
+      <span class="kanban-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
+    </div>
     <div class="kanban-card__resumo">${escapeHtml(it.resumo || "")}</div>
     ${it.anexo ? `<div class="kanban-card__anexo">PMS: ${anexoLinkHtml(it.anexo)}</div>` : ""}
     <div class="kanban-celulas">${celulasHtml}</div>
