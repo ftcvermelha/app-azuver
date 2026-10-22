@@ -691,14 +691,11 @@ textarea { resize: vertical; min-height: 44px; }
 
 .kanban {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 12px;
 }
 
-@media (max-width: 960px) {
-  .kanban { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 560px) {
+@media (max-width: 720px) {
   .kanban { grid-template-columns: 1fr; }
 }
 
@@ -852,3 +849,46 @@ textarea { resize: vertical; min-height: 44px; }
 
 .btn--danger-ghost:hover { background: var(--critico-soft); }
 .btn:disabled { opacity: 0.5; cursor: wait; }
+
+/* ---------------------------------------------------------------------- */
+/* Status automático + situação por célula no Painel do Comando           */
+/* ---------------------------------------------------------------------- */
+
+.resposta-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.resposta-remover { padding: 2px 8px; font-size: 11px; }
+
+.injecao-card__footer .btn-excluir { margin-left: auto; }
+
+.kanban-card__anexo {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.kanban-celulas {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 6px;
+}
+
+.kanban-celula {
+  display: grid;
+  grid-template-columns: 16px 44px 1fr;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.kanban-celula--ok .kanban-celula__status { color: var(--status-pronta); }
+.kanban-celula--pendente .kanban-celula__status { color: var(--importante); }
+.kanban-celula__abrev { font-size: 11px; color: var(--accent); }
+.kanban-celula__info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kanban-celula__pendente { color: var(--text-faint); font-style: italic; }

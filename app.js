@@ -20,6 +20,7 @@ import {
   deleteDoc,
   doc,
   arrayUnion,
+  arrayRemove,
   getDoc,
   Bytes,
   onSnapshot,
@@ -87,10 +88,27 @@ const URGENCIA_LABEL = {
 
 const STATUS_LABEL = {
   pendente: "Pendente",
-  analise: "Em Análise",
-  decisao: "Decisão Necessária",
-  pronta: "Pronta / Expedida"
+  pronta: "Pronto"
 };
+
+// ---------------------------------------------------------------------
+// Status do PMS — derivado das respostas, nunca editado à mão:
+// fica "pronta" só quando TODAS as células roteadas anexaram resposta.
+// ---------------------------------------------------------------------
+
+function celulasRoteadas(it) {
+  return CELULAS.filter((c) => it.celulas && it.celulas[c.id] && it.celulas[c.id].sel);
+}
+
+function respostasDaCelula(it, celulaId) {
+  return (it.respostas || []).filter((r) => r.celula === celulaId);
+}
+
+function statusPms(it) {
+  const roteadas = celulasRoteadas(it);
+  if (roteadas.length === 0) return "pendente";
+  return roteadas.every((c) => respostasDaCelula(it, c.id).length > 0) ? "pronta" : "pendente";
+}
 
 // ---------------------------------------------------------------------
 // Estado local (dados em cache vindos do Firestore)
@@ -387,7 +405,6 @@ formNovaInjecao.addEventListener("submit", async (e) => {
       celulas,
       anexo,
       respostas: [],
-      status: "pendente",
       createdAt: serverTimestamp()
     });
 
@@ -437,7 +454,7 @@ function renderDirex() {
     items = items.filter((it) => it.celulas && it.celulas[viewAs] && it.celulas[viewAs].sel);
   }
   if (statusVal !== "todos") {
-    items = items.filter((it) => it.status === statusVal);
+    items = items.filter((it) => statusPms(it) === statusVal);
   }
 
   direxList.innerHTML = "";
@@ -468,7 +485,7 @@ function buildInjecaoCard(it, viewAs) {
       .filter((c) => it.celulas && it.celulas[c.id] && it.celulas[c.id].sel && it.celulas[c.id].texto)
       .map((c) => `
         <div class="celula-texto-block">
-          <span class="celula-texto-block__label">${c.abrev}</span>${escapeHtml(it.celulas[c.id].texto)}
+          <span class="celula-texto-block__label">${c.abrev}</span>Prazo: ${escapeHtml(it.celulas[c.id].texto)}
         </div>
       `).join("");
   } else {
@@ -476,7 +493,7 @@ function buildInjecaoCard(it, viewAs) {
     if (cel && cel.texto) {
       celulasTextoHtml = `
         <div class="celula-texto-block">
-          <span class="celula-texto-block__label">${CELULA_MAP[viewAs].abrev}</span>${escapeHtml(cel.texto)}
+          <span class="celula-texto-block__label">${CELULA_MAP[viewAs].abrev}</span>Prazo: ${escapeHtml(cel.texto)}
         </div>
       `;
     }
@@ -487,7 +504,7 @@ function buildInjecaoCard(it, viewAs) {
     : "";
 
   // Respostas: célula vê só as suas; Comando vê todas.
-  const celulasRoteadas = CELULAS.filter((c) => it.celulas && it.celulas[c.id] && it.celulas[c.id].sel);
+  const roteadas = celulasRoteadas(it);
   let respostas = it.respostas || [];
   if (!isCommandView(viewAs)) {
     respostas = respostas.filter((r) => r.celula === viewAs);
@@ -495,14 +512,18 @@ function buildInjecaoCard(it, viewAs) {
   const respostasItensHtml = respostas.map((r) => `
     <div class="resposta-item">
       <span class="celula-texto-block__label">${CELULA_MAP[r.celula] ? CELULA_MAP[r.celula].abrev : escapeHtml(r.celula)}</span>${anexoLinkHtml(r)}
+      <button type="button" class="impacto-row__remove resposta-remover" data-arquivo-id="${escapeHtml(r.arquivoId)}">remover</button>
     </div>
   `).join("");
 
-  // Seletor de célula só aparece na visão do Comando; na visão de uma
-  // célula, a resposta é atribuída a ela.
+  // Seletor de célula só aparece na visão do Comando (pré-seleciona a
+  // primeira célula ainda pendente); na visão de uma célula, a resposta é
+  // atribuída a ela.
+  const primeiraPendente = roteadas.find((c) => respostasDaCelula(it, c.id).length === 0);
   const celulaSelectHtml = isCommandView(viewAs)
-    ? `<select class="select-compact resposta-celula">${celulasRoteadas
-        .map((c) => `<option value="${c.id}">${c.abrev}</option>`).join("")}</select>`
+    ? `<select class="select-compact resposta-celula">${roteadas
+        .map((c) => `<option value="${c.id}" ${primeiraPendente && primeiraPendente.id === c.id ? "selected" : ""}>${c.abrev}</option>`)
+        .join("")}</select>`
     : "";
 
   const respostaHtml = `
@@ -520,9 +541,12 @@ function buildInjecaoCard(it, viewAs) {
     </div>
   `;
 
+  const status = statusPms(it);
+
   card.innerHTML = `
     <div class="injecao-card__head">
       <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
+      <span class="pill pill--status-${status}">${STATUS_LABEL[status]}</span>
       <span class="injecao-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
       <span class="injecao-card__origem">${escapeHtml(it.origem || "")}</span>
     </div>
@@ -532,28 +556,29 @@ function buildInjecaoCard(it, viewAs) {
     ${anexoHtml}
     ${respostaHtml}
     <div class="injecao-card__footer">
-      <span class="injecao-card__autor">${it.autor ? "Autor: " + escapeHtml(it.autor) : ""} · ${formatTimestamp(it.createdAt)}</span>
-      <div class="injecao-card__actions">
+      <span class="injecao-card__autor">${it.autor ? "Autor: " + escapeHtml(it.autor) + " · " : ""}${formatTimestamp(it.createdAt)}</span>
       <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
-      <select class="select-compact status-select" data-id="${it.id}">
-        <option value="pendente" ${it.status === "pendente" ? "selected" : ""}>Pendente</option>
-        <option value="analise" ${it.status === "analise" ? "selected" : ""}>Em Análise</option>
-        <option value="decisao" ${it.status === "decisao" ? "selected" : ""}>Decisão Necessária</option>
-        <option value="pronta" ${it.status === "pronta" ? "selected" : ""}>Pronta / Expedida</option>
-      </select>
-      </div>
     </div>
   `;
 
-  const statusSelect = card.querySelector(".status-select");
-  statusSelect.addEventListener("change", async () => {
-    const newStatus = statusSelect.value;
-    try {
-      await updateDoc(doc(db, "injecoes", it.id), { status: newStatus });
-    } catch (err) {
-      console.error("Erro ao atualizar status:", err);
-      statusSelect.value = it.status;
-    }
+  card.querySelectorAll(".resposta-remover").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const resposta = (it.respostas || []).find((r) => r.arquivoId === btn.dataset.arquivoId);
+      if (!resposta) return;
+      const abrev = CELULA_MAP[resposta.celula] ? CELULA_MAP[resposta.celula].abrev : resposta.celula;
+      const ok = window.confirm(`Remover a resposta "${resposta.nome}" da ${abrev}? O PMS volta a ficar pendente para esta célula se não houver outra resposta dela.`);
+      if (!ok) return;
+      btn.disabled = true;
+      try {
+        // arrayRemove exige o objeto idêntico ao gravado.
+        await updateDoc(doc(db, "injecoes", it.id), { respostas: arrayRemove(resposta) });
+        await deleteAnexo(resposta).catch((err) => console.error("Erro ao apagar arquivo da resposta:", err));
+      } catch (err) {
+        console.error("Erro ao remover resposta:", err);
+        btn.disabled = false;
+        window.alert("Erro ao remover. Tente novamente.");
+      }
+    });
   });
 
   const respostaFile = card.querySelector(".resposta-file");
@@ -785,29 +810,26 @@ const kpiProntas = document.getElementById("kpiProntas");
 
 const kanbanCols = {
   pendente: document.getElementById("kanbanPendente"),
-  analise: document.getElementById("kanbanAnalise"),
-  decisao: document.getElementById("kanbanDecisao"),
   pronta: document.getElementById("kanbanPronta")
 };
 
 function renderComando() {
   const total = injecoesCache.length;
-  const criticasAbertas = injecoesCache.filter(
-    (it) => it.urgencia === "critico" && it.status !== "pronta"
+  const criticasPendentes = injecoesCache.filter(
+    (it) => it.urgencia === "critico" && statusPms(it) === "pendente"
   ).length;
-  const pendentes = injecoesCache.filter((it) => it.status === "pendente").length;
-  const prontas = injecoesCache.filter((it) => it.status === "pronta").length;
+  const pendentes = injecoesCache.filter((it) => statusPms(it) === "pendente").length;
+  const prontas = total - pendentes;
 
   kpiTotal.textContent = total;
-  kpiCriticas.textContent = criticasAbertas;
+  kpiCriticas.textContent = criticasPendentes;
   kpiPendentes.textContent = pendentes;
   kpiProntas.textContent = prontas;
 
   Object.values(kanbanCols).forEach((col) => (col.innerHTML = ""));
 
   injecoesCache.forEach((it) => {
-    const col = kanbanCols[it.status] || kanbanCols.pendente;
-    col.appendChild(buildKanbanCard(it));
+    kanbanCols[statusPms(it)].appendChild(buildKanbanCard(it));
   });
 }
 
@@ -816,27 +838,28 @@ function buildKanbanCard(it) {
   card.className = "kanban-card";
   card.dataset.urgencia = it.urgencia;
 
+  // Situação por célula: quem já respondeu (com link para baixar) e quem
+  // ainda está pendente.
+  const celulasHtml = celulasRoteadas(it).map((c) => {
+    const respostas = respostasDaCelula(it, c.id);
+    const respondeu = respostas.length > 0;
+    return `
+      <div class="kanban-celula kanban-celula--${respondeu ? "ok" : "pendente"}">
+        <span class="kanban-celula__status">${respondeu ? "✓" : "⏳"}</span>
+        <span class="kanban-celula__abrev mono">${c.abrev}</span>
+        <span class="kanban-celula__info">${respondeu
+          ? respostas.map(anexoLinkHtml).join("")
+          : '<span class="kanban-celula__pendente">pendente</span>'}</span>
+      </div>
+    `;
+  }).join("");
+
   card.innerHTML = `
     <span class="kanban-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
     <div class="kanban-card__resumo">${escapeHtml(it.resumo || "")}</div>
-    <select class="status-select" data-id="${it.id}">
-      <option value="pendente" ${it.status === "pendente" ? "selected" : ""}>Pendente</option>
-      <option value="analise" ${it.status === "analise" ? "selected" : ""}>Em Análise</option>
-      <option value="decisao" ${it.status === "decisao" ? "selected" : ""}>Decisão Necessária</option>
-      <option value="pronta" ${it.status === "pronta" ? "selected" : ""}>Pronta / Expedida</option>
-    </select>
+    ${it.anexo ? `<div class="kanban-card__anexo">PMS: ${anexoLinkHtml(it.anexo)}</div>` : ""}
+    <div class="kanban-celulas">${celulasHtml}</div>
   `;
-
-  const statusSelect = card.querySelector(".status-select");
-  statusSelect.addEventListener("change", async () => {
-    const newStatus = statusSelect.value;
-    try {
-      await updateDoc(doc(db, "injecoes", it.id), { status: newStatus });
-    } catch (err) {
-      console.error("Erro ao atualizar status:", err);
-      statusSelect.value = it.status;
-    }
-  });
 
   return card;
 }

@@ -129,10 +129,15 @@ usar o painel — não é necessário nenhum cadastro ou login manual.
   respostas: [                                   // respostas das células
     { nome, arquivoId, tamanho, celula, enviadoEm: number }, ...
   ],
-  status: "pendente" | "analise" | "decisao" | "pronta",
   createdAt: Timestamp
 }
 ```
+
+`celulas.<id>.texto` é o **prazo** daquela célula (texto livre, ex: GDH).
+O status **não é gravado**: é calculado a partir das respostas — o PMS fica
+**Pronto** só quando todas as células roteadas anexaram ao menos uma
+resposta; caso contrário, **Pendente**. (Documentos antigos podem ter um
+campo `status`, que é ignorado.)
 
 A coleção mantém o nome técnico `injecoes`, mas cada documento é um **PMS**.
 ### Coleção `arquivos` (anexos DOCX/PDF, até 10 MB)
@@ -181,10 +186,14 @@ um arquivo de 10 MB consome cerca de 13 leituras.
    orientação.
 2. **Controle PMS** — lista em tempo real, filtrável por status e pelo
    seletor global "Ver como". Cada PMS pode receber arquivos de resposta
-   das células (DOCX/PDF) e pode ser excluído (com os anexos).
+   das células (DOCX/PDF), que podem ser removidas em caso de engano; o
+   status Pendente/Pronto muda sozinho. O PMS pode ser excluído (com os
+   anexos).
 3. **Súmulas de Reunião** — registra decisões de reunião com impactos por
    célula; feed cronológico reverso.
-4. **Painel do Comando** — KPIs e quadro Kanban por status.
+4. **Painel do Comando** — KPIs e quadro Pendente/Pronto; cada PMS mostra
+   quais células já responderam (com o arquivo para baixar) e quais
+   ainda estão pendentes.
 
 O seletor global **"Ver como"** (fixo no topo) filtra o que aparece nas
 abas de Injeções e Súmulas: ao escolher uma célula específica, só aparecem

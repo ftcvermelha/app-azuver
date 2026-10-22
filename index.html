@@ -109,7 +109,7 @@
 
       <div class="field">
         <label>Roteamento por célula</label>
-        <p class="hint">Marque as células envolvidas e descreva o que cada uma precisa fazer ou saber.</p>
+        <p class="hint">Marque as células envolvidas e informe o prazo de cada uma.</p>
         <div class="celulas-grid" id="celulasGridNova"><!-- gerado via JS --></div>
       </div>
 
@@ -129,9 +129,7 @@
         <select id="statusFilter" class="select-compact">
           <option value="todos">Todos</option>
           <option value="pendente">Pendente</option>
-          <option value="analise">Em Análise</option>
-          <option value="decisao">Decisão Necessária</option>
-          <option value="pronta">Pronta / Expedida</option>
+          <option value="pronta">Pronto</option>
         </select>
       </div>
     </div>
@@ -194,7 +192,7 @@
       </div>
       <div class="kpi kpi--critico">
         <span class="kpi__value" id="kpiCriticas">0</span>
-        <span class="kpi__label">Críticas em Aberto</span>
+        <span class="kpi__label">Críticos Pendentes</span>
       </div>
       <div class="kpi kpi--pendente">
         <span class="kpi__value" id="kpiPendentes">0</span>
@@ -202,7 +200,7 @@
       </div>
       <div class="kpi kpi--pronta">
         <span class="kpi__value" id="kpiProntas">0</span>
-        <span class="kpi__label">Prontas</span>
+        <span class="kpi__label">Prontos</span>
       </div>
     </div>
 
@@ -211,16 +209,8 @@
         <h3 class="kanban__title">Pendente</h3>
         <div class="kanban__cards" id="kanbanPendente"></div>
       </div>
-      <div class="kanban__col" data-status="analise">
-        <h3 class="kanban__title">Em Análise</h3>
-        <div class="kanban__cards" id="kanbanAnalise"></div>
-      </div>
-      <div class="kanban__col" data-status="decisao">
-        <h3 class="kanban__title">Decisão Necessária</h3>
-        <div class="kanban__cards" id="kanbanDecisao"></div>
-      </div>
       <div class="kanban__col" data-status="pronta">
-        <h3 class="kanban__title">Pronta / Expedida</h3>
+        <h3 class="kanban__title">Pronto</h3>
         <div class="kanban__cards" id="kanbanPronta"></div>
       </div>
     </div>
@@ -235,7 +225,7 @@
       <span class="celula-block__abrev"></span>
       <span class="celula-block__nome"></span>
     </label>
-    <textarea class="celula-block__texto" rows="2" placeholder="O que esta célula precisa fazer/saber..." hidden></textarea>
+    <textarea class="celula-block__texto" rows="2" placeholder="Prazo (ex: 251800ZOUT26)" hidden></textarea>
   </div>
 </template>
 
