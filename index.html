@@ -55,7 +55,7 @@
   <!-- ================= TAB: NOVO PMS ================= -->
   <section class="view view--active" id="view-nova">
     <form id="formNovaInjecao" class="card form-injecao" autocomplete="off">
-      <h2 class="section-title">Registrar PMS</h2>
+      <h2 class="section-title" id="formNovaTitulo">Registrar PMS</h2>
 
       <div class="grid grid--3">
         <div class="field">
@@ -94,7 +94,7 @@
       <div class="field">
         <label>Arquivo do PMS (opcional)</label>
         <div class="anexo-picker">
-          <label class="btn btn--ghost btn--small anexo-picker__btn" for="inAnexo">Anexar arquivo (DOCX/PDF, até 10 MB)</label>
+          <label class="btn btn--ghost btn--small anexo-picker__btn" for="inAnexo" id="inAnexoBtn">Anexar arquivo (DOCX/PDF, até 10 MB)</label>
           <input type="file" id="inAnexo" class="anexo-picker__input" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
           <span id="inAnexoNome" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
           <button type="button" id="inAnexoLimpar" class="impacto-row__remove" hidden>remover</button>
@@ -115,6 +115,7 @@
 
       <div class="form-actions">
         <button type="submit" class="btn btn--primary">Registrar e Rotear</button>
+        <button type="button" id="btnCancelarEdicao" class="btn btn--ghost" hidden>Cancelar edição</button>
         <span id="novaInjecaoMsg" class="form-msg"></span>
       </div>
     </form>
@@ -125,7 +126,7 @@
     <div class="toolbar">
       <h2 class="section-title">Controle PMS</h2>
       <div class="toolbar__filters">
-        <label for="statusFilter" class="toolbar__label">Status</label>
+        <label for="statusFilter" class="toolbar__label">Status da célula</label>
         <select id="statusFilter" class="select-compact">
           <option value="todos">Todos</option>
           <option value="pendente">Pendente</option>
@@ -133,7 +134,8 @@
         </select>
       </div>
     </div>
-    <div id="direxList" class="cards-list">
+    <p class="hint">PMS separados por seção (célula). Cada seção mostra os PMS roteados para ela e a sua resposta.</p>
+    <div id="direxList" class="secoes-list">
       <p class="empty-state">Carregando PMS...</p>
     </div>
   </section>

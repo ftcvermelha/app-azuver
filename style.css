@@ -897,3 +897,77 @@ textarea { resize: vertical; min-height: 44px; }
 .kanban-celula__abrev { font-size: 11px; color: var(--accent); }
 .kanban-celula__info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .kanban-celula__pendente { color: var(--text-faint); font-style: italic; }
+
+/* ---------------------------------------------------------------------- */
+/* Controle PMS por seção + texto da resposta                             */
+/* ---------------------------------------------------------------------- */
+
+.secoes-list { display: flex; flex-direction: column; gap: 10px; }
+
+.secao {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.secao__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.secao[open] > .secao__head { border-bottom: 1px solid var(--border-soft); }
+
+.secao__abrev { font-weight: 600; color: var(--accent); min-width: 48px; }
+.secao__nome { font-size: 14px; color: var(--text); }
+
+.secao__contagem {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.secao__contagem--pendente { color: var(--importante); }
+
+.secao__body { padding: 12px; }
+
+.chip--atual { border-color: var(--accent); color: var(--accent); }
+
+.chips__progresso {
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.resposta-item {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.resposta-item__linha {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.resposta-item__texto {
+  white-space: pre-wrap;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.resposta-upload { align-items: flex-start; }
+
+.resposta-texto { flex: 1 1 260px; min-width: 0; }
+
+.resposta-upload__acoes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
