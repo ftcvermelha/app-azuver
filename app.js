@@ -115,7 +115,7 @@ function statusPms(it) {
 // ---------------------------------------------------------------------
 
 let injecoesCache = [];
-let simulasCache = [];
+let mensagensCache = [];
 
 // ---------------------------------------------------------------------
 // Navegação por abas
@@ -152,7 +152,7 @@ viewAsSelect.value = getViewAs();
 viewAsSelect.addEventListener("change", () => {
   setViewAs(viewAsSelect.value);
   renderDirex();
-  renderSimulas();
+  renderMensagens();
 });
 
 function isCommandView(viewAs) {
@@ -289,7 +289,110 @@ document.addEventListener("click", async (e) => {
 });
 
 // ---------------------------------------------------------------------
-// Formulário: Novo PMS (coleção "injecoes")
+// Seletor de anexo (DOCX/PDF) dos formulários. Na edição, `carregar`
+// mostra o arquivo atual, que pode ser mantido, substituído ou removido.
+// ---------------------------------------------------------------------
+
+function criarAnexoPicker(prefixo, msgEl) {
+  const input = document.getElementById(`${prefixo}Anexo`);
+  const nomeEl = document.getElementById(`${prefixo}AnexoNome`);
+  const limparBtn = document.getElementById(`${prefixo}AnexoLimpar`);
+  const botao = document.getElementById(`${prefixo}AnexoBtn`);
+  const picker = { atual: null, removerAtual: false };
+
+  picker.arquivo = () => input.files[0] || null;
+  picker.mantido = () => (picker.atual && !picker.removerAtual ? picker.atual : null);
+  picker.reset = () => {
+    input.value = "";
+    const atual = picker.mantido();
+    nomeEl.textContent = atual
+      ? `Atual: ${atual.nome} (${formatBytes(atual.tamanho)})`
+      : "Nenhum arquivo selecionado";
+    limparBtn.hidden = !atual;
+    botao.textContent = atual ? "Substituir arquivo (DOCX/PDF, até 10 MB)" : "Anexar arquivo (DOCX/PDF, até 10 MB)";
+  };
+  picker.carregar = (anexo) => {
+    picker.atual = anexo || null;
+    picker.removerAtual = false;
+    picker.reset();
+  };
+
+  input.addEventListener("change", () => {
+    msgEl.textContent = "";
+    msgEl.classList.remove("error");
+    const file = input.files[0];
+    if (!file) return picker.reset();
+    const erro = validateAnexo(file);
+    if (erro) {
+      picker.reset();
+      msgEl.textContent = erro;
+      msgEl.classList.add("error");
+      return;
+    }
+    nomeEl.textContent = `${file.name} (${formatBytes(file.size)})`;
+    limparBtn.hidden = false;
+  });
+
+  // "remover": descarta o arquivo recém-escolhido; sem ele, na edição,
+  // marca o arquivo atual para ser apagado ao salvar.
+  limparBtn.addEventListener("click", () => {
+    if (!input.files[0] && picker.atual) picker.removerAtual = true;
+    picker.reset();
+  });
+
+  return picker;
+}
+
+// Anexo final ao salvar: novo upload, o atual mantido ou nenhum. Devolve
+// também o anexo anterior que deixou de ser usado, para ser apagado.
+async function resolverAnexo(picker, msgEl) {
+  let anexo = picker.mantido();
+  if (picker.arquivo()) {
+    msgEl.textContent = "Enviando arquivo...";
+    anexo = await uploadAnexo(picker.arquivo());
+  }
+  const descartado = picker.atual && (!anexo || anexo.arquivoId !== picker.atual.arquivoId)
+    ? picker.atual
+    : null;
+  return { anexo, descartado };
+}
+
+function limparMsg(msgEl) {
+  msgEl.textContent = "";
+  msgEl.classList.remove("error");
+}
+
+function mostrarErro(msgEl, texto) {
+  msgEl.textContent = texto;
+  msgEl.classList.add("error");
+}
+
+// ---------------------------------------------------------------------
+// Novo Evento: escolha entre PMS e Mensagem
+// ---------------------------------------------------------------------
+
+const formNovaInjecao = document.getElementById("formNovaInjecao");
+const formMensagem = document.getElementById("formMensagem");
+const tipoEventoRadios = document.querySelectorAll('input[name="tipoEvento"]');
+
+function escolherTipoEvento(tipo) {
+  tipoEventoRadios.forEach((r) => (r.checked = r.value === tipo));
+  formNovaInjecao.hidden = tipo !== "pms";
+  formMensagem.hidden = tipo !== "mensagem";
+}
+
+tipoEventoRadios.forEach((r) => {
+  r.addEventListener("change", () => escolherTipoEvento(r.value));
+});
+
+function abrirFormulario(tipo) {
+  escolherTipoEvento(tipo);
+  ativarAba("nova");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+// ---------------------------------------------------------------------
+// Formulário: PMS (coleção "injecoes")
 // ---------------------------------------------------------------------
 
 const celulasGridNova = document.getElementById("celulasGridNova");
@@ -314,34 +417,15 @@ CELULAS.forEach((celula) => {
   celulasGridNova.appendChild(node);
 });
 
-const formNovaInjecao = document.getElementById("formNovaInjecao");
 const novaInjecaoMsg = document.getElementById("novaInjecaoMsg");
-const inAnexo = document.getElementById("inAnexo");
-const inAnexoNome = document.getElementById("inAnexoNome");
-const inAnexoLimpar = document.getElementById("inAnexoLimpar");
-const inAnexoBtn = document.getElementById("inAnexoBtn");
 const formNovaTitulo = document.getElementById("formNovaTitulo");
 const btnCancelarEdicao = document.getElementById("btnCancelarEdicao");
 const btnSubmitPms = formNovaInjecao.querySelector('button[type="submit"]');
+const pickerPms = criarAnexoPicker("in", novaInjecaoMsg);
 
-// Edição: o mesmo formulário do Novo PMS é reaproveitado para alterar um
-// PMS já registrado. `edicao` guarda o id e o anexo atual desse PMS.
-let edicao = null; // { id, gdh, anexo }
-let removerAnexoAtual = false;
-
-function anexoAtualEdicao() {
-  return edicao && edicao.anexo && !removerAnexoAtual ? edicao.anexo : null;
-}
-
-function resetAnexoPicker() {
-  inAnexo.value = "";
-  const atual = anexoAtualEdicao();
-  inAnexoNome.textContent = atual
-    ? `Atual: ${atual.nome} (${formatBytes(atual.tamanho)})`
-    : "Nenhum arquivo selecionado";
-  inAnexoLimpar.hidden = !atual;
-  inAnexoBtn.textContent = atual ? "Substituir arquivo (DOCX/PDF, até 10 MB)" : "Anexar arquivo (DOCX/PDF, até 10 MB)";
-}
+// Edição: o mesmo formulário é reaproveitado para alterar um PMS já
+// registrado; `edicao` guarda o id desse PMS.
+let edicao = null; // { id }
 
 function limparFormPms() {
   formNovaInjecao.reset();
@@ -352,8 +436,7 @@ function limparFormPms() {
   });
   formNovaInjecao.querySelector('input[name="urgencia"][value="critico"]').checked = true;
   edicao = null;
-  removerAnexoAtual = false;
-  resetAnexoPicker();
+  pickerPms.carregar(null);
   formNovaTitulo.textContent = "Registrar PMS";
   btnSubmitPms.textContent = "Registrar e Rotear";
   btnCancelarEdicao.hidden = true;
@@ -361,7 +444,7 @@ function limparFormPms() {
 
 function iniciarEdicao(it) {
   limparFormPms();
-  edicao = { id: it.id, gdh: it.gdh || "", anexo: it.anexo || null };
+  edicao = { id: it.id };
 
   document.getElementById("inGdh").value = it.gdh || "";
   document.getElementById("inOrigem").value = it.origem || "";
@@ -377,49 +460,22 @@ function iniciarEdicao(it) {
     ref.textarea.value = ref.checkbox.checked ? cel.texto || "" : "";
   });
 
-  resetAnexoPicker();
+  pickerPms.carregar(it.anexo);
   formNovaTitulo.textContent = `Editar PMS ${it.gdh || ""}`.trim();
   btnSubmitPms.textContent = "Salvar alterações";
   btnCancelarEdicao.hidden = false;
-  novaInjecaoMsg.textContent = "";
-  novaInjecaoMsg.classList.remove("error");
-  ativarAba("nova");
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  limparMsg(novaInjecaoMsg);
+  abrirFormulario("pms");
 }
 
 btnCancelarEdicao.addEventListener("click", () => {
   limparFormPms();
-  novaInjecaoMsg.textContent = "";
-  novaInjecaoMsg.classList.remove("error");
-});
-
-inAnexo.addEventListener("change", () => {
-  novaInjecaoMsg.textContent = "";
-  novaInjecaoMsg.classList.remove("error");
-  const file = inAnexo.files[0];
-  if (!file) return resetAnexoPicker();
-  const erro = validateAnexo(file);
-  if (erro) {
-    resetAnexoPicker();
-    novaInjecaoMsg.textContent = erro;
-    novaInjecaoMsg.classList.add("error");
-    return;
-  }
-  inAnexoNome.textContent = `${file.name} (${formatBytes(file.size)})`;
-  inAnexoLimpar.hidden = false;
-});
-
-// "remover": descarta o arquivo recém-escolhido; sem ele, na edição,
-// marca o arquivo atual do PMS para ser apagado ao salvar.
-inAnexoLimpar.addEventListener("click", () => {
-  if (!inAnexo.files[0] && edicao && edicao.anexo) removerAnexoAtual = true;
-  resetAnexoPicker();
+  limparMsg(novaInjecaoMsg);
 });
 
 formNovaInjecao.addEventListener("submit", async (e) => {
   e.preventDefault();
-  novaInjecaoMsg.textContent = "";
-  novaInjecaoMsg.classList.remove("error");
+  limparMsg(novaInjecaoMsg);
 
   const gdhEl = document.getElementById("inGdh");
   const origemEl = document.getElementById("inOrigem");
@@ -432,8 +488,7 @@ formNovaInjecao.addEventListener("submit", async (e) => {
   ]);
 
   if (requiredFieldsValidation) {
-    novaInjecaoMsg.textContent = requiredFieldsValidation.message;
-    novaInjecaoMsg.classList.add("error");
+    mostrarErro(novaInjecaoMsg, requiredFieldsValidation.message);
     requiredFieldsValidation.firstEmptyEl.focus();
     return;
   }
@@ -454,22 +509,15 @@ formNovaInjecao.addEventListener("submit", async (e) => {
   });
 
   if (!algumaSelecionada) {
-    novaInjecaoMsg.textContent = "Selecione ao menos uma célula para rotear.";
-    novaInjecaoMsg.classList.add("error");
+    mostrarErro(novaInjecaoMsg, "Selecione ao menos uma célula para rotear.");
     return;
   }
 
   if (edicao) return salvarEdicao({ gdh, origem, autor, urgencia, resumo, celulas });
 
-  const submitBtn = btnSubmitPms;
-  submitBtn.disabled = true;
-
+  btnSubmitPms.disabled = true;
   try {
-    let anexo = null;
-    if (inAnexo.files[0]) {
-      novaInjecaoMsg.textContent = "Enviando arquivo...";
-      anexo = await uploadAnexo(inAnexo.files[0]);
-    }
+    const { anexo } = await resolverAnexo(pickerPms, novaInjecaoMsg);
 
     await addDoc(collection(db, "injecoes"), {
       gdh,
@@ -483,22 +531,20 @@ formNovaInjecao.addEventListener("submit", async (e) => {
       createdAt: serverTimestamp()
     });
 
-    novaInjecaoMsg.textContent = "PMS registrado e roteado.";
     limparFormPms();
+    novaInjecaoMsg.textContent = "PMS registrado e roteado.";
   } catch (err) {
     console.error("Erro ao registrar PMS:", err);
-    novaInjecaoMsg.textContent = "Erro ao registrar. Tente novamente.";
-    novaInjecaoMsg.classList.add("error");
+    mostrarErro(novaInjecaoMsg, "Erro ao registrar. Tente novamente.");
   } finally {
-    submitBtn.disabled = false;
+    btnSubmitPms.disabled = false;
   }
 });
 
 async function salvarEdicao(dados) {
   const atual = injecoesCache.find((x) => x.id === edicao.id);
   if (!atual) {
-    novaInjecaoMsg.textContent = "Este PMS não existe mais (pode ter sido excluído).";
-    novaInjecaoMsg.classList.add("error");
+    mostrarErro(novaInjecaoMsg, "Este PMS não existe mais (pode ter sido excluído).");
     return;
   }
 
@@ -515,41 +561,200 @@ async function salvarEdicao(dados) {
 
   btnSubmitPms.disabled = true;
   try {
-    const anexoAntigo = edicao.anexo;
-    let anexo = anexoAtualEdicao();
-    if (inAnexo.files[0]) {
-      novaInjecaoMsg.textContent = "Enviando arquivo...";
-      anexo = await uploadAnexo(inAnexo.files[0]);
-    }
+    const { anexo, descartado } = await resolverAnexo(pickerPms, novaInjecaoMsg);
 
     const alteracoes = { ...dados, anexo, editadoEm: serverTimestamp() };
     if (orfas.length > 0) alteracoes.respostas = arrayRemove(...orfas);
     await updateDoc(doc(db, "injecoes", edicao.id), alteracoes);
 
     // Melhor esforço: apaga o arquivo substituído/removido e os das respostas descartadas.
-    const lixo = [...orfas];
-    if (anexoAntigo && (!anexo || anexo.arquivoId !== anexoAntigo.arquivoId)) lixo.push(anexoAntigo);
+    const lixo = descartado ? [...orfas, descartado] : orfas;
     await Promise.allSettled(lixo.map(deleteAnexo));
 
     limparFormPms();
     novaInjecaoMsg.textContent = "PMS atualizado.";
   } catch (err) {
     console.error("Erro ao salvar PMS:", err);
-    novaInjecaoMsg.textContent = "Erro ao salvar. Tente novamente.";
-    novaInjecaoMsg.classList.add("error");
+    mostrarErro(novaInjecaoMsg, "Erro ao salvar. Tente novamente.");
   } finally {
     btnSubmitPms.disabled = false;
   }
 }
 
+async function excluirPms(it, btn) {
+  const ok = window.confirm(
+    `Excluir o PMS ${it.gdh || ""}? Os arquivos anexados também serão apagados. Esta ação não pode ser desfeita.`
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    await deleteDoc(doc(db, "injecoes", it.id));
+    const arquivos = [it.anexo, ...(it.respostas || [])].filter((a) => a && a.arquivoId);
+    // Melhor esforço: falha ao apagar um arquivo não impede a exclusão do PMS.
+    await Promise.allSettled(arquivos.map(deleteAnexo));
+  } catch (err) {
+    console.error("Erro ao excluir PMS:", err);
+    btn.disabled = false;
+    window.alert("Erro ao excluir. Tente novamente.");
+  }
+}
+
 // ---------------------------------------------------------------------
-// Controle PMS — listagem + filtros
+// Formulário: Mensagem (coleção "mensagens") — só para consulta das
+// seções de destino; sem prazo, urgência ou resposta.
 // ---------------------------------------------------------------------
 
-const direxList = document.getElementById("direxList");
-const statusFilter = document.getElementById("statusFilter");
+const mensagemMsg = document.getElementById("mensagemMsg");
+const formMensagemTitulo = document.getElementById("formMensagemTitulo");
+const btnCancelarEdicaoMsg = document.getElementById("btnCancelarEdicaoMsg");
+const btnSubmitMsg = formMensagem.querySelector('button[type="submit"]');
+const btnSelecionarTodas = document.getElementById("btnSelecionarTodas");
+const destinosGrid = document.getElementById("destinosGrid");
+const destinoChecks = {}; // id -> checkbox
+const pickerMsg = criarAnexoPicker("msg", mensagemMsg);
 
-statusFilter.addEventListener("change", renderDirex);
+let edicaoMsg = null; // { id }
+
+CELULAS.forEach((c) => {
+  const opt = document.createElement("label");
+  opt.className = "celula-block celula-block__check";
+  opt.innerHTML = `
+    <input type="checkbox" class="celula-check">
+    <span class="celula-block__abrev">${c.abrev}</span>
+    <span class="celula-block__nome">${escapeHtml(c.nome)}</span>
+  `;
+  const checkbox = opt.querySelector("input");
+  checkbox.addEventListener("change", atualizarSelecionarTodas);
+  destinoChecks[c.id] = checkbox;
+  destinosGrid.appendChild(opt);
+});
+
+function todasSelecionadas() {
+  return CELULAS.every((c) => destinoChecks[c.id].checked);
+}
+
+function atualizarSelecionarTodas() {
+  btnSelecionarTodas.textContent = todasSelecionadas() ? "Desmarcar todas" : "Selecionar todas";
+}
+
+btnSelecionarTodas.addEventListener("click", () => {
+  const marcar = !todasSelecionadas();
+  CELULAS.forEach((c) => (destinoChecks[c.id].checked = marcar));
+  atualizarSelecionarTodas();
+});
+
+function limparFormMensagem() {
+  formMensagem.reset();
+  edicaoMsg = null;
+  pickerMsg.carregar(null);
+  atualizarSelecionarTodas();
+  formMensagemTitulo.textContent = "Registrar Mensagem";
+  btnSubmitMsg.textContent = "Registrar e Enviar";
+  btnCancelarEdicaoMsg.hidden = true;
+}
+
+function iniciarEdicaoMensagem(m) {
+  limparFormMensagem();
+  edicaoMsg = { id: m.id };
+
+  document.getElementById("msgGdh").value = m.gdh || "";
+  document.getElementById("msgOrigem").value = m.origem || "";
+  document.getElementById("msgAutor").value = m.autor || "";
+  document.getElementById("msgAssunto").value = m.assunto || "";
+  document.getElementById("msgTexto").value = m.texto || "";
+  CELULAS.forEach((c) => (destinoChecks[c.id].checked = (m.destinos || []).includes(c.id)));
+  atualizarSelecionarTodas();
+
+  pickerMsg.carregar(m.anexo);
+  formMensagemTitulo.textContent = `Editar Mensagem ${m.gdh || ""}`.trim();
+  btnSubmitMsg.textContent = "Salvar alterações";
+  btnCancelarEdicaoMsg.hidden = false;
+  limparMsg(mensagemMsg);
+  abrirFormulario("mensagem");
+}
+
+btnCancelarEdicaoMsg.addEventListener("click", () => {
+  limparFormMensagem();
+  limparMsg(mensagemMsg);
+});
+
+formMensagem.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  limparMsg(mensagemMsg);
+
+  const gdhEl = document.getElementById("msgGdh");
+  const origemEl = document.getElementById("msgOrigem");
+  const assuntoEl = document.getElementById("msgAssunto");
+
+  const requiredFieldsValidation = validateRequiredFields([
+    { el: gdhEl, label: "o GDH" },
+    { el: origemEl, label: "a Origem" },
+    { el: assuntoEl, label: "o Assunto" }
+  ]);
+
+  if (requiredFieldsValidation) {
+    mostrarErro(mensagemMsg, requiredFieldsValidation.message);
+    requiredFieldsValidation.firstEmptyEl.focus();
+    return;
+  }
+
+  const texto = document.getElementById("msgTexto").value.trim();
+  if (!texto && !pickerMsg.mantido() && !pickerMsg.arquivo()) {
+    mostrarErro(mensagemMsg, "Escreva o texto da mensagem ou anexe um arquivo.");
+    return;
+  }
+
+  const destinos = CELULAS.filter((c) => destinoChecks[c.id].checked).map((c) => c.id);
+  if (destinos.length === 0) {
+    mostrarErro(mensagemMsg, "Selecione ao menos uma seção de destino.");
+    return;
+  }
+
+  const dados = {
+    gdh: gdhEl.value.trim(),
+    origem: origemEl.value.trim(),
+    autor: document.getElementById("msgAutor").value.trim(),
+    assunto: assuntoEl.value.trim(),
+    texto,
+    destinos
+  };
+
+  btnSubmitMsg.disabled = true;
+  try {
+    const { anexo, descartado } = await resolverAnexo(pickerMsg, mensagemMsg);
+    if (edicaoMsg) {
+      await updateDoc(doc(db, "mensagens", edicaoMsg.id), { ...dados, anexo, editadoEm: serverTimestamp() });
+      if (descartado) await deleteAnexo(descartado).catch((err) => console.error("Erro ao apagar arquivo antigo:", err));
+      limparFormMensagem();
+      mensagemMsg.textContent = "Mensagem atualizada.";
+    } else {
+      await addDoc(collection(db, "mensagens"), { ...dados, anexo, createdAt: serverTimestamp() });
+      limparFormMensagem();
+      mensagemMsg.textContent = "Mensagem registrada e enviada.";
+    }
+  } catch (err) {
+    console.error("Erro ao registrar mensagem:", err);
+    mostrarErro(mensagemMsg, edicaoMsg ? "Erro ao salvar. Tente novamente." : "Erro ao registrar. Tente novamente.");
+  } finally {
+    btnSubmitMsg.disabled = false;
+  }
+});
+
+async function excluirMensagem(m, btn) {
+  const ok = window.confirm(
+    `Excluir a mensagem ${m.gdh || ""}${m.assunto ? ` (${m.assunto})` : ""}? O arquivo anexado também será apagado. Esta ação não pode ser desfeita.`
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    await deleteDoc(doc(db, "mensagens", m.id));
+    if (m.anexo) await deleteAnexo(m.anexo).catch((err) => console.error("Erro ao apagar arquivo da mensagem:", err));
+  } catch (err) {
+    console.error("Erro ao excluir mensagem:", err);
+    btn.disabled = false;
+    window.alert("Erro ao excluir. Tente novamente.");
+  }
+}
 
 function formatTimestamp(ts) {
   if (!ts || typeof ts.toDate !== "function") return "—";
@@ -560,94 +765,219 @@ function formatTimestamp(ts) {
   });
 }
 
-// Seções abertas/recolhidas (por navegador) e rascunhos das caixas de
-// texto de resposta: sobrevivem às re-renderizações em tempo real.
-const SECOES_KEY = "painelFtc_secoesAbertas";
-const secoesAbertas = new Set(lerSecoesAbertas());
+function autorDataHtml(item) {
+  return (item.autor ? "Autor: " + escapeHtml(item.autor) + " · " : "") +
+    formatTimestamp(item.createdAt) +
+    (item.editadoEm ? " · editado " + formatTimestamp(item.editadoEm) : "");
+}
+
+// ---------------------------------------------------------------------
+// Controles (PMS e Mensagens) em formato de dashboard: um quadrado por
+// seção; clicar abre a seção inteira; "Listar" mostra todos os
+// lançamentos, do mais recente para o mais antigo. Na visão de uma
+// célula ("Ver como"), a seção dela abre direto.
+// ---------------------------------------------------------------------
+
+const TILE_MAX_ITENS = 5;
+
+function criarControle(cfg) {
+  const conteudo = document.getElementById(`${cfg.prefixo}Conteudo`);
+  const btnListar = document.getElementById(`${cfg.prefixo}BtnListar`);
+  const btnVoltar = document.getElementById(`${cfg.prefixo}BtnVoltar`);
+  const titulo = document.getElementById(`${cfg.prefixo}Titulo`);
+  const estado = { modo: "grade", celula: null };
+
+  function ir(modo, celula = null) {
+    estado.modo = modo;
+    estado.celula = celula;
+    render();
+    window.scrollTo({ top: 0 });
+  }
+
+  btnListar.addEventListener("click", () => ir("lista"));
+  btnVoltar.addEventListener("click", () => ir("grade"));
+
+  function render() {
+    const viewAs = getViewAs();
+    const unica = !isCommandView(viewAs);
+    let { modo, celula } = estado;
+    if (unica && modo !== "lista") {
+      modo = "secao";
+      celula = viewAs;
+    }
+
+    btnListar.hidden = modo === "lista";
+    btnVoltar.hidden = modo === "grade" || (modo === "secao" && unica);
+    btnVoltar.textContent = unica ? "← Voltar à seção" : "← Voltar às seções";
+    titulo.textContent =
+      modo === "lista" ? cfg.tituloLista :
+      modo === "secao" ? `${cfg.titulo} · ${CELULA_MAP[celula].nome}` : cfg.titulo;
+
+    // Preserva o foco e o cursor de quem está escrevendo numa caixa de texto.
+    const ativo = document.activeElement;
+    const focoChave = ativo && conteudo.contains(ativo) && ativo.dataset.chave ? ativo.dataset.chave : null;
+    const cursor = focoChave ? [ativo.selectionStart, ativo.selectionEnd] : null;
+
+    conteudo.innerHTML = "";
+    if (modo === "grade") {
+      conteudo.appendChild(buildGrade());
+    } else if (modo === "secao") {
+      conteudo.appendChild(buildLista(cfg.itensDaCelula(celula), (it) => cfg.cardSecao(it, celula), cfg.vazioSecao));
+    } else {
+      conteudo.appendChild(buildLista(cfg.itensLista(), cfg.linhaLista, cfg.vazioLista));
+    }
+
+    if (focoChave) {
+      const el = conteudo.querySelector(`[data-chave="${focoChave}"]`);
+      if (el) {
+        el.focus();
+        el.setSelectionRange(cursor[0], cursor[1]);
+      }
+    }
+  }
+
+  function buildLista(items, build, vazio) {
+    const lista = document.createElement("div");
+    lista.className = "cards-list";
+    if (items.length === 0) {
+      lista.innerHTML = `<p class="empty-state">${vazio}</p>`;
+    } else {
+      items.forEach((it) => lista.appendChild(build(it)));
+    }
+    return lista;
+  }
+
+  function buildGrade() {
+    const grade = document.createElement("div");
+    grade.className = "secoes-grade";
+    CELULAS.forEach((c) => {
+      const { contagem, alerta, linhas } = cfg.tile(c.id);
+      const extras = linhas.length - TILE_MAX_ITENS;
+      const tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "secao-tile";
+      tile.innerHTML = `
+        <span class="secao-tile__head">
+          <span class="secao-tile__abrev mono">${c.abrev}</span>
+          <span class="secao-tile__nome">${escapeHtml(c.nome)}</span>
+        </span>
+        <span class="secao-tile__contagem${alerta ? " secao-tile__contagem--alerta" : ""}">${contagem}</span>
+        <span class="secao-tile__itens">
+          ${linhas.length === 0 ? `<span class="secao-tile__vazio">${cfg.vazioTile}</span>` : linhas.slice(0, TILE_MAX_ITENS).join("")}
+          ${extras > 0 ? `<span class="secao-tile__mais">+${extras} mais</span>` : ""}
+        </span>
+        <span class="secao-tile__abrir">Abrir seção →</span>
+      `;
+      tile.addEventListener("click", () => ir("secao", c.id));
+      grade.appendChild(tile);
+    });
+    return grade;
+  }
+
+  return { render };
+}
+
+function plural(n, singular, pluralTxt) {
+  return `${n} ${n === 1 ? singular : pluralTxt}`;
+}
+
+// ---------------------------------------------------------------------
+// Controle PMS
+// ---------------------------------------------------------------------
+
+const statusFilter = document.getElementById("statusFilter");
+
+// Rascunhos das caixas de texto de resposta: sobrevivem às
+// re-renderizações em tempo real.
 const rascunhosResposta = new Map(); // "<pmsId>:<celulaId>" -> texto
-
-function lerSecoesAbertas() {
-  try {
-    return JSON.parse(localStorage.getItem(SECOES_KEY)) || [];
-  } catch {
-    return [];
-  }
-}
-
-function salvarSecoesAbertas() {
-  try {
-    localStorage.setItem(SECOES_KEY, JSON.stringify([...secoesAbertas]));
-  } catch {
-    // sem armazenamento local: as seções só não ficam lembradas
-  }
-}
 
 function celulaRespondeu(it, celulaId) {
   return respostasDaCelula(it, celulaId).length > 0;
 }
 
-function renderDirex() {
-  const viewAs = getViewAs();
-  const statusVal = statusFilter.value;
-  const secoes = isCommandView(viewAs) ? CELULAS : [CELULA_MAP[viewAs]];
-
-  // Preserva o foco e o cursor de quem está escrevendo uma resposta.
-  const ativo = document.activeElement;
-  const focoChave = ativo && ativo.classList.contains("resposta-texto") ? ativo.dataset.chave : null;
-  const cursor = focoChave ? [ativo.selectionStart, ativo.selectionEnd] : null;
-
-  direxList.innerHTML = "";
-  secoes.forEach((c) => direxList.appendChild(buildSecao(c, statusVal, secoes.length === 1)));
-
-  if (focoChave) {
-    const el = direxList.querySelector(`.resposta-texto[data-chave="${focoChave}"]`);
-    if (el) {
-      el.focus();
-      el.setSelectionRange(cursor[0], cursor[1]);
-    }
-  }
+function pmsDaCelula(celulaId) {
+  return injecoesCache.filter((it) => it.celulas && it.celulas[celulaId] && it.celulas[celulaId].sel);
 }
 
-function buildSecao(celula, statusVal, unica) {
-  const doCelula = injecoesCache.filter((it) => it.celulas && it.celulas[celula.id] && it.celulas[celula.id].sel);
-  const pendentes = doCelula.filter((it) => !celulaRespondeu(it, celula.id)).length;
+// Na seção, o filtro de status vale para a resposta daquela célula.
+function pmsDaCelulaFiltrados(celulaId) {
+  const statusVal = statusFilter.value;
+  const items = pmsDaCelula(celulaId);
+  if (statusVal === "todos") return items;
+  return items.filter((it) => (celulaRespondeu(it, celulaId) ? "pronta" : "pendente") === statusVal);
+}
 
-  let items = doCelula;
-  if (statusVal !== "todos") {
-    items = items.filter((it) => (celulaRespondeu(it, celula.id) ? "pronta" : "pendente") === statusVal);
+const controlePms = criarControle({
+  prefixo: "direx",
+  titulo: "Controle PMS",
+  tituloLista: "Controle PMS · PMS lançados",
+  vazioTile: "Nenhum PMS",
+  vazioSecao: "Nenhum PMS desta seção para este filtro.",
+  vazioLista: "Nenhum PMS encontrado para este filtro.",
+  itensDaCelula: pmsDaCelulaFiltrados,
+  cardSecao: buildInjecaoCard,
+  itensLista: () => statusFilter.value === "todos"
+    ? injecoesCache
+    : injecoesCache.filter((it) => statusPms(it) === statusFilter.value),
+  linhaLista: buildPmsLinha,
+  tile: (celulaId) => {
+    const pendentes = pmsDaCelula(celulaId).filter((it) => !celulaRespondeu(it, celulaId)).length;
+    return {
+      contagem: `${plural(pendentes, "pendente", "pendentes")} · ${pmsDaCelula(celulaId).length} PMS`,
+      alerta: pendentes > 0,
+      linhas: pmsDaCelulaFiltrados(celulaId).map((it) => {
+        const ok = celulaRespondeu(it, celulaId);
+        return `
+          <span class="secao-tile__item">
+            <span class="secao-tile__status secao-tile__status--${ok ? "ok" : "pendente"}">${ok ? "✓" : "⏳"}</span>
+            <span class="secao-tile__gdh mono">${escapeHtml(it.gdh || "—")}</span>
+            <span class="secao-tile__resumo">${escapeHtml(it.resumo || "")}</span>
+          </span>
+        `;
+      })
+    };
   }
+});
 
-  const secao = document.createElement("details");
-  secao.className = "secao";
-  secao.open = unica || secoesAbertas.has(celula.id);
-  secao.innerHTML = `
-    <summary class="secao__head">
-      <span class="secao__abrev mono">${celula.abrev}</span>
-      <span class="secao__nome">${escapeHtml(celula.nome)}</span>
-      <span class="secao__contagem${pendentes > 0 ? " secao__contagem--pendente" : ""}">
-        ${pendentes} pendente${pendentes === 1 ? "" : "s"} · ${doCelula.length} PMS
-      </span>
-    </summary>
-    <div class="secao__body cards-list"></div>
+statusFilter.addEventListener("change", renderDirex);
+
+function renderDirex() {
+  controlePms.render();
+}
+
+// Linha do "Listar PMS": resumo do lançamento e situação de cada célula.
+function buildPmsLinha(it) {
+  const row = document.createElement("article");
+  row.className = "injecao-card lancamento";
+  row.dataset.urgencia = it.urgencia;
+
+  const status = statusPms(it);
+  const celulasHtml = celulasRoteadas(it).map((c) => {
+    const ok = celulaRespondeu(it, c.id);
+    return `<span class="chip chip--${ok ? "ok" : "pendente"}">${ok ? "✓" : "⏳"} ${c.abrev}</span>`;
+  }).join("");
+
+  row.innerHTML = `
+    <div class="injecao-card__head">
+      <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
+      <span class="pill pill--status-${status}">${STATUS_LABEL[status]}</span>
+      <span class="injecao-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
+      <span class="injecao-card__origem">${escapeHtml(it.origem || "")}</span>
+    </div>
+    <div class="injecao-card__resumo lancamento__texto">${escapeHtml(it.resumo || "")}</div>
+    <div class="chips">${celulasHtml}</div>
+    ${it.anexo ? `<div class="lancamento__anexo">Arquivo: ${anexoLinkHtml(it.anexo)}</div>` : ""}
+    <div class="injecao-card__footer">
+      <span class="injecao-card__autor">${autorDataHtml(it)}</span>
+      <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
+      <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
+    </div>
   `;
 
-  if (!unica) {
-    secao.addEventListener("toggle", () => {
-      if (secao.open) secoesAbertas.add(celula.id);
-      else secoesAbertas.delete(celula.id);
-      salvarSecoesAbertas();
-    });
-  }
-
-  const body = secao.querySelector(".secao__body");
-  if (items.length === 0) {
-    body.innerHTML = `<p class="empty-state">${doCelula.length === 0
-      ? "Nenhum PMS roteado para esta seção."
-      : "Nenhum PMS desta seção para este filtro."}</p>`;
-  } else {
-    items.forEach((it) => body.appendChild(buildInjecaoCard(it, celula.id)));
-  }
-  return secao;
+  row.querySelector(".btn-editar").addEventListener("click", () => iniciarEdicao(it));
+  const btnExcluir = row.querySelector(".btn-excluir");
+  btnExcluir.addEventListener("click", () => excluirPms(it, btnExcluir));
+  return row;
 }
 
 // Cartão de um PMS dentro da seção de uma célula: mostra o prazo, as
@@ -717,7 +1047,7 @@ function buildInjecaoCard(it, celulaId) {
     ${anexoHtml}
     ${respostaHtml}
     <div class="injecao-card__footer">
-      <span class="injecao-card__autor">${it.autor ? "Autor: " + escapeHtml(it.autor) + " · " : ""}${formatTimestamp(it.createdAt)}${it.editadoEm ? " · editado " + formatTimestamp(it.editadoEm) : ""}</span>
+      <span class="injecao-card__autor">${autorDataHtml(it)}</span>
       <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
       <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
     </div>
@@ -793,23 +1123,7 @@ function buildInjecaoCard(it, celulaId) {
   card.querySelector(".btn-editar").addEventListener("click", () => iniciarEdicao(it));
 
   const btnExcluir = card.querySelector(".btn-excluir");
-  btnExcluir.addEventListener("click", async () => {
-    const ok = window.confirm(
-      `Excluir o PMS ${it.gdh || ""}? Os arquivos anexados também serão apagados. Esta ação não pode ser desfeita.`
-    );
-    if (!ok) return;
-    btnExcluir.disabled = true;
-    try {
-      await deleteDoc(doc(db, "injecoes", it.id));
-      const arquivos = [it.anexo, ...(it.respostas || [])].filter((a) => a && a.arquivoId);
-      // Melhor esforço: falha ao apagar um arquivo não impede a exclusão do PMS.
-      await Promise.allSettled(arquivos.map(deleteAnexo));
-    } catch (err) {
-      console.error("Erro ao excluir PMS:", err);
-      btnExcluir.disabled = false;
-      window.alert("Erro ao excluir. Tente novamente.");
-    }
-  });
+  btnExcluir.addEventListener("click", () => excluirPms(it, btnExcluir));
 
   return card;
 }
@@ -821,158 +1135,84 @@ function escapeHtml(str) {
 }
 
 // ---------------------------------------------------------------------
-// Súmulas de Reunião
+// Controle Mensagens — só consulta nas seções; editar/excluir no
+// "Listar Mensagens".
 // ---------------------------------------------------------------------
 
-const impactosList = document.getElementById("impactosList");
-const btnAddImpacto = document.getElementById("btnAddImpacto");
-const formSimula = document.getElementById("formSimula");
-const simulaMsg = document.getElementById("simulaMsg");
-const simulasListEl = document.getElementById("simulasList");
-
-function buildImpactoRow() {
-  const row = document.createElement("div");
-  row.className = "impacto-row";
-
-  const select = document.createElement("select");
-  CELULAS.forEach((c) => {
-    const opt = document.createElement("option");
-    opt.value = c.id;
-    opt.textContent = `${c.abrev} — ${c.nome}`;
-    select.appendChild(opt);
-  });
-
-  const textarea = document.createElement("textarea");
-  textarea.rows = 1;
-  textarea.placeholder = "Impacto para esta célula...";
-
-  const removeBtn = document.createElement("button");
-  removeBtn.type = "button";
-  removeBtn.className = "impacto-row__remove";
-  removeBtn.textContent = "remover";
-  removeBtn.addEventListener("click", () => row.remove());
-
-  row.appendChild(select);
-  row.appendChild(textarea);
-  row.appendChild(removeBtn);
-  return row;
+function mensagensDaCelula(celulaId) {
+  return mensagensCache.filter((m) => (m.destinos || []).includes(celulaId));
 }
 
-btnAddImpacto.addEventListener("click", () => {
-  impactosList.appendChild(buildImpactoRow());
-});
-
-// Começa com uma linha de impacto pronta
-impactosList.appendChild(buildImpactoRow());
-
-formSimula.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  simulaMsg.textContent = "";
-  simulaMsg.classList.remove("error");
-
-  const reuniaoEl = document.getElementById("simReuniao");
-  const gdhEl = document.getElementById("simGdh");
-  const decisaoEl = document.getElementById("simDecisao");
-
-  const requiredFieldsValidation = validateRequiredFields([
-    { el: reuniaoEl, label: "a Reunião" },
-    { el: gdhEl, label: "o GDH" },
-    { el: decisaoEl, label: "a Decisão-chave" }
-  ]);
-
-  if (requiredFieldsValidation) {
-    simulaMsg.textContent = requiredFieldsValidation.message;
-    simulaMsg.classList.add("error");
-    requiredFieldsValidation.firstEmptyEl.focus();
-    return;
-  }
-
-  const reuniao = reuniaoEl.value.trim();
-  const gdh = gdhEl.value.trim();
-  const decisao = decisaoEl.value.trim();
-  const autor = document.getElementById("simAutor").value.trim();
-
-  const impactos = [];
-  impactosList.querySelectorAll(".impacto-row").forEach((row) => {
-    const celula = row.querySelector("select").value;
-    const texto = row.querySelector("textarea").value.trim();
-    if (texto) impactos.push({ celula, texto });
-  });
-
-  const submitBtn = formSimula.querySelector('button[type="submit"]');
-  submitBtn.disabled = true;
-
-  try {
-    await addDoc(collection(db, "simulas"), {
-      reuniao,
-      gdh,
-      decisao,
-      autor,
-      impactos,
-      createdAt: serverTimestamp()
-    });
-
-    simulaMsg.textContent = "Súmula registrada.";
-    formSimula.reset();
-    impactosList.innerHTML = "";
-    impactosList.appendChild(buildImpactoRow());
-  } catch (err) {
-    console.error("Erro ao registrar súmula:", err);
-    simulaMsg.textContent = "Erro ao registrar. Tente novamente.";
-    simulaMsg.classList.add("error");
-  } finally {
-    submitBtn.disabled = false;
+const controleMensagens = criarControle({
+  prefixo: "msgs",
+  titulo: "Controle Mensagens",
+  tituloLista: "Controle Mensagens · Mensagens lançadas",
+  vazioTile: "Nenhuma mensagem",
+  vazioSecao: "Nenhuma mensagem para esta seção.",
+  vazioLista: "Nenhuma mensagem registrada.",
+  itensDaCelula: mensagensDaCelula,
+  cardSecao: (m, celulaId) => buildMensagemCard(m, celulaId, false),
+  itensLista: () => mensagensCache,
+  linhaLista: (m) => buildMensagemCard(m, null, true),
+  tile: (celulaId) => {
+    const ms = mensagensDaCelula(celulaId);
+    return {
+      contagem: plural(ms.length, "mensagem", "mensagens"),
+      alerta: false,
+      linhas: ms.map((m) => `
+        <span class="secao-tile__item">
+          <span class="secao-tile__gdh mono">${escapeHtml(m.gdh || "—")}</span>
+          <span class="secao-tile__resumo">${escapeHtml(m.assunto || "")}</span>
+        </span>
+      `)
+    };
   }
 });
 
-function renderSimulas() {
-  const viewAs = getViewAs();
-  let items = simulasCache.slice();
-
-  if (!isCommandView(viewAs)) {
-    items = items.filter((s) => (s.impactos || []).some((imp) => imp.celula === viewAs));
-  }
-
-  simulasListEl.innerHTML = "";
-
-  if (items.length === 0) {
-    simulasListEl.innerHTML = '<p class="empty-state">Nenhuma súmula encontrada para este filtro.</p>';
-    return;
-  }
-
-  items.forEach((s) => {
-    simulasListEl.appendChild(buildSimulaCard(s, viewAs));
-  });
+function renderMensagens() {
+  controleMensagens.render();
 }
 
-function buildSimulaCard(s, viewAs) {
+function destinosChipsHtml(m, celulaAtual) {
+  const destinos = m.destinos || [];
+  if (CELULAS.every((c) => destinos.includes(c.id))) {
+    return '<span class="chip">Todas as seções</span>';
+  }
+  return CELULAS
+    .filter((c) => destinos.includes(c.id))
+    .map((c) => `<span class="chip${c.id === celulaAtual ? " chip--atual" : ""}">${c.abrev}</span>`)
+    .join("");
+}
+
+// Cartão de mensagem. Na seção é só consulta; no "Listar Mensagens"
+// (comAcoes) ganha Editar/Excluir.
+function buildMensagemCard(m, celulaAtual, comAcoes) {
   const card = document.createElement("article");
-  card.className = "simula-card";
-
-  let impactos = s.impactos || [];
-  if (!isCommandView(viewAs)) {
-    impactos = impactos.filter((imp) => imp.celula === viewAs);
-  }
-
-  const impactosHtml = impactos.map((imp) => `
-    <div class="impacto-item">
-      <span class="impacto-item__celula mono">${CELULA_MAP[imp.celula] ? CELULA_MAP[imp.celula].abrev : imp.celula}</span>
-      <span>${escapeHtml(imp.texto)}</span>
-    </div>
-  `).join("");
+  card.className = "injecao-card mensagem-card";
 
   card.innerHTML = `
-    <div class="simula-card__head">
-      <span class="simula-card__reuniao">${escapeHtml(s.reuniao || "")}</span>
-      <span class="simula-card__gdh mono">${escapeHtml(s.gdh || "—")}</span>
+    <div class="injecao-card__head">
+      <span class="injecao-card__gdh mono">${escapeHtml(m.gdh || "—")}</span>
+      <span class="injecao-card__origem">${escapeHtml(m.origem || "")}</span>
     </div>
-    <div class="simula-card__decisao">${escapeHtml(s.decisao || "")}</div>
-    ${impactosHtml}
+    <div class="mensagem-card__assunto">${escapeHtml(m.assunto || "")}</div>
+    ${m.texto ? `<div class="mensagem-card__texto${comAcoes ? " lancamento__texto" : ""}">${escapeHtml(m.texto)}</div>` : ""}
+    ${m.anexo ? `<div class="anexo-block"><span class="anexo-block__label">Arquivo da mensagem</span>${anexoLinkHtml(m.anexo)}</div>` : ""}
+    <div class="chips mensagem-card__destinos"><span class="chips__progresso">Para:</span>${destinosChipsHtml(m, celulaAtual)}</div>
     <div class="injecao-card__footer">
-      <span class="injecao-card__autor">${s.autor ? "Autor: " + escapeHtml(s.autor) : ""} · ${formatTimestamp(s.createdAt)}</span>
+      <span class="injecao-card__autor">${autorDataHtml(m)}</span>
+      ${comAcoes ? `
+        <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
+        <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
+      ` : ""}
     </div>
   `;
 
+  if (comAcoes) {
+    card.querySelector(".btn-editar").addEventListener("click", () => iniciarEdicaoMensagem(m));
+    const btnExcluir = card.querySelector(".btn-excluir");
+    btnExcluir.addEventListener("click", () => excluirMensagem(m, btnExcluir));
+  }
   return card;
 }
 
@@ -1063,15 +1303,15 @@ function startListeners() {
     }
   );
 
-  const simulasQuery = query(collection(db, "simulas"), orderBy("createdAt", "desc"));
+  const mensagensQuery = query(collection(db, "mensagens"), orderBy("createdAt", "desc"));
   onSnapshot(
-    simulasQuery,
+    mensagensQuery,
     (snapshot) => {
-      simulasCache = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-      renderSimulas();
+      mensagensCache = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderMensagens();
     },
     (err) => {
-      console.error("Erro no listener de súmulas:", err);
+      console.error("Erro no listener de mensagens:", err);
       setConn("offline");
     }
   );

@@ -44,16 +44,28 @@
 </header>
 
 <nav class="tabs" id="tabs">
-  <button class="tab tab--active" data-tab="nova">Novo PMS</button>
+  <button class="tab tab--active" data-tab="nova">Novo Evento</button>
   <button class="tab" data-tab="direx">Controle PMS</button>
-  <button class="tab" data-tab="simulas">Súmulas de Reunião</button>
+  <button class="tab" data-tab="mensagens">Controle Mensagens</button>
   <button class="tab" data-tab="comando">Painel do Comando</button>
 </nav>
 
 <main id="app">
 
-  <!-- ================= TAB: NOVO PMS ================= -->
+  <!-- ================= TAB: NOVO EVENTO ================= -->
   <section class="view view--active" id="view-nova">
+    <div class="evento-tipo" role="radiogroup" aria-label="Tipo de evento">
+      <span class="evento-tipo__label">Tipo de evento</span>
+      <label class="evento-tipo__opt">
+        <input type="radio" name="tipoEvento" value="pms" checked>
+        <span>PMS</span>
+      </label>
+      <label class="evento-tipo__opt">
+        <input type="radio" name="tipoEvento" value="mensagem">
+        <span>Mensagem</span>
+      </label>
+    </div>
+
     <form id="formNovaInjecao" class="card form-injecao" autocomplete="off">
       <h2 class="section-title" id="formNovaTitulo">Registrar PMS</h2>
 
@@ -119,14 +131,72 @@
         <span id="novaInjecaoMsg" class="form-msg"></span>
       </div>
     </form>
+
+    <form id="formMensagem" class="card form-injecao" autocomplete="off" hidden>
+      <h2 class="section-title" id="formMensagemTitulo">Registrar Mensagem</h2>
+
+      <div class="grid grid--3">
+        <div class="field">
+          <label for="msgGdh">GDH</label>
+          <input type="text" id="msgGdh" class="mono" placeholder="ex: 241430ZSET26">
+        </div>
+        <div class="field">
+          <label for="msgOrigem">Origem</label>
+          <input type="text" id="msgOrigem" placeholder="ex: Cmdo Sup / Célula de Controle">
+        </div>
+        <div class="field">
+          <label for="msgAutor">Autor (opcional)</label>
+          <input type="text" id="msgAutor" placeholder="ex: Cap Souto">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="msgAssunto">Assunto</label>
+        <input type="text" id="msgAssunto" placeholder="ex: Atualização do quadro de situação">
+      </div>
+
+      <div class="field">
+        <label>Arquivo da mensagem (opcional)</label>
+        <div class="anexo-picker">
+          <label class="btn btn--ghost btn--small anexo-picker__btn" for="msgAnexo" id="msgAnexoBtn">Anexar arquivo (DOCX/PDF, até 10 MB)</label>
+          <input type="file" id="msgAnexo" class="anexo-picker__input" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+          <span id="msgAnexoNome" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
+          <button type="button" id="msgAnexoLimpar" class="impacto-row__remove" hidden>remover</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="msgTexto">Texto da mensagem</label>
+        <textarea id="msgTexto" rows="6" placeholder="Escreva ou cole aqui o texto da mensagem (opcional se houver arquivo anexado)..."></textarea>
+      </div>
+
+      <div class="field">
+        <label>Seções de destino</label>
+        <div class="destinos-head">
+          <p class="hint">Marque as seções que devem receber a mensagem.</p>
+          <button type="button" id="btnSelecionarTodas" class="btn btn--ghost btn--small">Selecionar todas</button>
+        </div>
+        <div class="celulas-grid" id="destinosGrid"><!-- gerado via JS --></div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary">Registrar e Enviar</button>
+        <button type="button" id="btnCancelarEdicaoMsg" class="btn btn--ghost" hidden>Cancelar edição</button>
+        <span id="mensagemMsg" class="form-msg"></span>
+      </div>
+    </form>
   </section>
 
   <!-- ================= TAB: CONTROLE PMS ================= -->
   <section class="view" id="view-direx">
     <div class="toolbar">
-      <h2 class="section-title">Controle PMS</h2>
+      <div class="toolbar__nav">
+        <button type="button" id="direxBtnListar" class="btn btn--primary btn--small">Listar PMS</button>
+        <button type="button" id="direxBtnVoltar" class="btn btn--ghost btn--small" hidden>← Voltar às seções</button>
+        <h2 class="section-title" id="direxTitulo">Controle PMS</h2>
+      </div>
       <div class="toolbar__filters">
-        <label for="statusFilter" class="toolbar__label">Status da célula</label>
+        <label for="statusFilter" class="toolbar__label">Status</label>
         <select id="statusFilter" class="select-compact">
           <option value="todos">Todos</option>
           <option value="pendente">Pendente</option>
@@ -134,52 +204,22 @@
         </select>
       </div>
     </div>
-    <p class="hint">PMS separados por seção (célula). Cada seção mostra os PMS roteados para ela e a sua resposta.</p>
-    <div id="direxList" class="secoes-list">
+    <div id="direxConteudo">
       <p class="empty-state">Carregando PMS...</p>
     </div>
   </section>
 
-  <!-- ================= TAB: SÚMULAS DE REUNIÃO ================= -->
-  <section class="view" id="view-simulas">
-    <form id="formSimula" class="card form-simula" autocomplete="off">
-      <h2 class="section-title">Registrar Súmula de Reunião</h2>
-
-      <div class="grid grid--3">
-        <div class="field">
-          <label for="simReuniao">Reunião</label>
-          <input type="text" id="simReuniao" placeholder="ex: Reunião de Coordenação 1300">
-        </div>
-        <div class="field">
-          <label for="simGdh">GDH</label>
-          <input type="text" id="simGdh" class="mono" placeholder="ex: 241300ZSET26">
-        </div>
-        <div class="field">
-          <label for="simAutor">Autor (opcional)</label>
-          <input type="text" id="simAutor" placeholder="ex: Maj Fulano">
-        </div>
+  <!-- ================= TAB: CONTROLE MENSAGENS ================= -->
+  <section class="view" id="view-mensagens">
+    <div class="toolbar">
+      <div class="toolbar__nav">
+        <button type="button" id="msgsBtnListar" class="btn btn--primary btn--small">Listar Mensagens</button>
+        <button type="button" id="msgsBtnVoltar" class="btn btn--ghost btn--small" hidden>← Voltar às seções</button>
+        <h2 class="section-title" id="msgsTitulo">Controle Mensagens</h2>
       </div>
-
-      <div class="field">
-        <label for="simDecisao">Decisão-chave</label>
-        <textarea id="simDecisao" rows="2" placeholder="Qual foi a decisão tomada?"></textarea>
-      </div>
-
-      <div class="field">
-        <label>Impactos por célula</label>
-        <div id="impactosList" class="impactos-list"><!-- linhas dinâmicas --></div>
-        <button type="button" id="btnAddImpacto" class="btn btn--ghost btn--small">+ adicionar impacto</button>
-      </div>
-
-      <div class="form-actions">
-        <button type="submit" class="btn btn--primary">Registrar Súmula</button>
-        <span id="simulaMsg" class="form-msg"></span>
-      </div>
-    </form>
-
-    <h3 class="section-subtitle">Histórico de Súmulas</h3>
-    <div id="simulasList" class="cards-list">
-      <p class="empty-state">Carregando súmulas...</p>
+    </div>
+    <div id="msgsConteudo">
+      <p class="empty-state">Carregando mensagens...</p>
     </div>
   </section>
 
