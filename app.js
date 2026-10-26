@@ -266,8 +266,10 @@ function formatBytes(n) {
 }
 
 function anexoLinkHtml(anexo) {
-  return `<span><button type="button" class="anexo-link" data-arquivo-id="${escapeHtml(anexo.arquivoId)}">` +
-    `${escapeHtml(anexo.nome)}</button> <span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span></span>`;
+  const ext = (anexo.nome || "").split(".").pop().toUpperCase();
+  return `<span class="arquivo"><span class="arquivo__tipo">${escapeHtml(ext)}</span>` +
+    `<button type="button" class="anexo-link" data-arquivo-id="${escapeHtml(anexo.arquivoId)}">${escapeHtml(anexo.nome)}</button>` +
+    `<span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span></span>`;
 }
 
 // Delegação: qualquer link de anexo na página dispara o download.
@@ -438,7 +440,7 @@ function limparFormPms() {
   edicao = null;
   pickerPms.carregar(null);
   formNovaTitulo.textContent = "Registrar PMS";
-  btnSubmitPms.textContent = "Registrar e Rotear";
+  btnSubmitPms.textContent = "Enviar PMS";
   btnCancelarEdicao.hidden = true;
 }
 
@@ -532,10 +534,10 @@ formNovaInjecao.addEventListener("submit", async (e) => {
     });
 
     limparFormPms();
-    novaInjecaoMsg.textContent = "PMS registrado e roteado.";
+    novaInjecaoMsg.textContent = "PMS enviado.";
   } catch (err) {
     console.error("Erro ao registrar PMS:", err);
-    mostrarErro(novaInjecaoMsg, "Erro ao registrar. Tente novamente.");
+    mostrarErro(novaInjecaoMsg, "Erro ao enviar. Tente novamente.");
   } finally {
     btnSubmitPms.disabled = false;
   }
@@ -649,7 +651,7 @@ function limparFormMensagem() {
   pickerMsg.carregar(null);
   atualizarSelecionarTodas();
   formMensagemTitulo.textContent = "Registrar Mensagem";
-  btnSubmitMsg.textContent = "Registrar e Enviar";
+  btnSubmitMsg.textContent = "Enviar Mensagem";
   btnCancelarEdicaoMsg.hidden = true;
 }
 
@@ -730,11 +732,11 @@ formMensagem.addEventListener("submit", async (e) => {
     } else {
       await addDoc(collection(db, "mensagens"), { ...dados, anexo, createdAt: serverTimestamp() });
       limparFormMensagem();
-      mensagemMsg.textContent = "Mensagem registrada e enviada.";
+      mensagemMsg.textContent = "Mensagem enviada.";
     }
   } catch (err) {
     console.error("Erro ao registrar mensagem:", err);
-    mostrarErro(mensagemMsg, edicaoMsg ? "Erro ao salvar. Tente novamente." : "Erro ao registrar. Tente novamente.");
+    mostrarErro(mensagemMsg, edicaoMsg ? "Erro ao salvar. Tente novamente." : "Erro ao enviar. Tente novamente.");
   } finally {
     btnSubmitMsg.disabled = false;
   }
@@ -756,9 +758,10 @@ async function excluirMensagem(m, btn) {
   }
 }
 
+// Aceita Timestamp do Firestore ou milissegundos (enviadoEm das respostas).
 function formatTimestamp(ts) {
-  if (!ts || typeof ts.toDate !== "function") return "—";
-  const d = ts.toDate();
+  const d = typeof ts === "number" ? new Date(ts) : ts && typeof ts.toDate === "function" ? ts.toDate() : null;
+  if (!d) return "—";
   return d.toLocaleString("pt-BR", {
     day: "2-digit", month: "2-digit", year: "2-digit",
     hour: "2-digit", minute: "2-digit"
@@ -769,6 +772,59 @@ function autorDataHtml(item) {
   return (item.autor ? "Autor: " + escapeHtml(item.autor) + " · " : "") +
     formatTimestamp(item.createdAt) +
     (item.editadoEm ? " · editado " + formatTimestamp(item.editadoEm) : "");
+}
+
+// Peças comuns a todos os cartões (Controle PMS, Controle Mensagens,
+// listas e Painel do Comando), para manter o mesmo padrão visual.
+
+function urgenciaPill(urgencia) {
+  return `<span class="pill pill--${urgencia}">${URGENCIA_LABEL[urgencia] || escapeHtml(urgencia)}</span>`;
+}
+
+function statusPill(status) {
+  return `<span class="pill pill--status-${status}">${STATUS_LABEL[status]}</span>`;
+}
+
+function cabecalhoHtml(pillsHtml, gdh, origem) {
+  return `
+    <div class="injecao-card__head">
+      ${pillsHtml}
+      <span class="injecao-card__gdh mono">${escapeHtml(gdh || "—")}</span>
+      ${origem ? `<span class="injecao-card__origem">${escapeHtml(origem)}</span>` : ""}
+    </div>
+  `;
+}
+
+function infoHtml(rotulo, valorHtml) {
+  return `<div class="info"><span class="rotulo">${rotulo}</span><div class="info__valor">${valorHtml}</div></div>`;
+}
+
+function rodapeHtml(item, comAcoes) {
+  return `
+    <div class="injecao-card__footer">
+      <span class="injecao-card__autor">${autorDataHtml(item)}</span>
+      ${comAcoes ? `
+        <span class="injecao-card__acoes">
+          <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
+          <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
+        </span>
+      ` : ""}
+    </div>
+  `;
+}
+
+// Resposta de uma célula: texto (para quem, assunto...) e o arquivo.
+function respostaHtml(r, comRemover) {
+  return `
+    <div class="resposta">
+      ${r.texto ? `<div class="resposta__texto">${escapeHtml(r.texto)}</div>` : ""}
+      <div class="resposta__rodape">
+        ${anexoLinkHtml(r)}
+        ${r.enviadoEm ? `<span class="resposta__data">enviada ${formatTimestamp(r.enviadoEm)}</span>` : ""}
+        ${comRemover ? `<button type="button" class="btn-remover resposta-remover" data-arquivo-id="${escapeHtml(r.arquivoId)}">remover</button>` : ""}
+      </div>
+    </div>
+  `;
 }
 
 // ---------------------------------------------------------------------
@@ -887,9 +943,10 @@ function plural(n, singular, pluralTxt) {
 
 const statusFilter = document.getElementById("statusFilter");
 
-// Rascunhos das caixas de texto de resposta: sobrevivem às
-// re-renderizações em tempo real.
-const rascunhosResposta = new Map(); // "<pmsId>:<celulaId>" -> texto
+// Rascunhos das respostas (texto e arquivo escolhido, ainda não
+// enviados): sobrevivem às re-renderizações em tempo real.
+const rascunhosResposta = new Map(); // "<pmsId>:<celulaId>" -> { texto, arquivo }
+const respostasEnviando = new Set(); // chaves com envio em andamento
 
 function celulaRespondeu(it, celulaId) {
   return respostasDaCelula(it, celulaId).length > 0;
@@ -951,27 +1008,17 @@ function buildPmsLinha(it) {
   row.className = "injecao-card lancamento";
   row.dataset.urgencia = it.urgencia;
 
-  const status = statusPms(it);
   const celulasHtml = celulasRoteadas(it).map((c) => {
     const ok = celulaRespondeu(it, c.id);
     return `<span class="chip chip--${ok ? "ok" : "pendente"}">${ok ? "✓" : "⏳"} ${c.abrev}</span>`;
   }).join("");
 
   row.innerHTML = `
-    <div class="injecao-card__head">
-      <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
-      <span class="pill pill--status-${status}">${STATUS_LABEL[status]}</span>
-      <span class="injecao-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
-      <span class="injecao-card__origem">${escapeHtml(it.origem || "")}</span>
-    </div>
+    ${cabecalhoHtml(urgenciaPill(it.urgencia) + statusPill(statusPms(it)), it.gdh, it.origem)}
     <div class="injecao-card__resumo lancamento__texto">${escapeHtml(it.resumo || "")}</div>
     <div class="chips">${celulasHtml}</div>
-    ${it.anexo ? `<div class="lancamento__anexo">Arquivo: ${anexoLinkHtml(it.anexo)}</div>` : ""}
-    <div class="injecao-card__footer">
-      <span class="injecao-card__autor">${autorDataHtml(it)}</span>
-      <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
-      <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
-    </div>
+    ${it.anexo ? `<div class="info-grid">${infoHtml("Arquivo do PMS", anexoLinkHtml(it.anexo))}</div>` : ""}
+    ${rodapeHtml(it, true)}
   `;
 
   row.querySelector(".btn-editar").addEventListener("click", () => iniciarEdicao(it));
@@ -981,76 +1028,54 @@ function buildPmsLinha(it) {
 }
 
 // Cartão de um PMS dentro da seção de uma célula: mostra o prazo, as
-// respostas e o envio de resposta dessa célula.
+// respostas e o envio de resposta dessa célula (texto + arquivo, que só
+// são gravados ao clicar em "Enviar resposta").
 function buildInjecaoCard(it, celulaId) {
   const card = document.createElement("article");
   card.className = "injecao-card";
   card.dataset.urgencia = it.urgencia;
 
+  const celula = CELULA_MAP[celulaId];
   const roteadas = celulasRoteadas(it);
+  const qtdRespondidas = roteadas.filter((c) => celulaRespondeu(it, c.id)).length;
+  const status = celulaRespondeu(it, celulaId) ? "pronta" : "pendente";
   const chipsHtml = roteadas
     .map((c) => `<span class="chip${c.id === celulaId ? " chip--atual" : ""}">${c.abrev}</span>`)
     .join("");
 
-  const cel = it.celulas[celulaId];
-  const prazoHtml = cel.texto
-    ? `<div class="celula-texto-block"><span class="celula-texto-block__label">${CELULA_MAP[celulaId].abrev}</span>Prazo: ${escapeHtml(cel.texto)}</div>`
-    : "";
+  const prazo = it.celulas[celulaId].texto;
+  const infos =
+    (prazo ? infoHtml(`Prazo da ${celula.abrev}`, escapeHtml(prazo)) : "") +
+    (it.anexo ? infoHtml("Arquivo do PMS", anexoLinkHtml(it.anexo)) : "");
 
-  const anexoHtml = it.anexo
-    ? `<div class="anexo-block"><span class="anexo-block__label">Arquivo do PMS</span>${anexoLinkHtml(it.anexo)}</div>`
-    : "";
-
-  const respostasItensHtml = respostasDaCelula(it, celulaId).map((r) => `
-    <div class="resposta-item">
-      <div class="resposta-item__linha">
-        ${anexoLinkHtml(r)}
-        <button type="button" class="impacto-row__remove resposta-remover" data-arquivo-id="${escapeHtml(r.arquivoId)}">remover</button>
-      </div>
-      ${r.texto ? `<div class="resposta-item__texto">${escapeHtml(r.texto)}</div>` : ""}
-    </div>
-  `).join("");
-
+  const respostas = respostasDaCelula(it, celulaId);
   const chave = `${it.id}:${celulaId}`;
-  const respostaHtml = `
-    <div class="resposta-block">
-      <span class="anexo-block__label">Resposta da ${CELULA_MAP[celulaId].abrev}</span>
-      ${respostasItensHtml || '<span class="resposta-vazia">Nenhuma resposta anexada.</span>'}
-      <div class="resposta-upload">
-        <textarea class="resposta-texto" rows="3" data-chave="${chave}"
-          placeholder="Para quem:&#10;Assunto:&#10;Outras informações:"></textarea>
-        <div class="resposta-upload__acoes">
-          <label class="btn btn--ghost btn--small anexo-picker__btn">
-            Anexar resposta (DOCX/PDF)
-            <input type="file" class="anexo-picker__input resposta-file" accept="${ANEXO_ACCEPT}">
-          </label>
-          <span class="form-msg resposta-msg"></span>
-        </div>
-      </div>
-    </div>
-  `;
-
-  const respondeu = celulaRespondeu(it, celulaId);
-  const status = respondeu ? "pronta" : "pendente";
-  const qtdRespondidas = roteadas.filter((c) => celulaRespondeu(it, c.id)).length;
 
   card.innerHTML = `
-    <div class="injecao-card__head">
-      <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
-      <span class="pill pill--status-${status}">${STATUS_LABEL[status]}</span>
-      <span class="injecao-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
-      <span class="injecao-card__origem">${escapeHtml(it.origem || "")}</span>
-    </div>
+    ${cabecalhoHtml(urgenciaPill(it.urgencia) + statusPill(status), it.gdh, it.origem)}
     <div class="injecao-card__resumo">${escapeHtml(it.resumo || "")}</div>
-    <div class="chips">${chipsHtml}<span class="chips__progresso">${qtdRespondidas}/${roteadas.length} células responderam</span></div>
-    ${prazoHtml}
-    ${anexoHtml}
-    ${respostaHtml}
-    <div class="injecao-card__footer">
-      <span class="injecao-card__autor">${autorDataHtml(it)}</span>
-      <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
-      <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
+    <div class="chips">${chipsHtml}<span class="chips__nota">${qtdRespondidas}/${roteadas.length} células responderam</span></div>
+    ${infos ? `<div class="info-grid">${infos}</div>` : ""}
+    <div class="bloco">
+      <span class="rotulo">Resposta da ${celula.abrev}</span>
+      ${respostas.length ? respostas.map((r) => respostaHtml(r, true)).join("") : '<p class="vazio">Nenhuma resposta enviada.</p>'}
+      <div class="resposta-form">
+        <span class="rotulo">Nova resposta</span>
+        <textarea class="resposta-texto" rows="3" data-chave="${chave}"
+          placeholder="Para quem:&#10;Assunto:&#10;Outras informações:"></textarea>
+        <div class="resposta-form__acoes">
+          <label class="btn btn--ghost btn--small">
+            Escolher arquivo (DOCX/PDF)
+            <input type="file" class="anexo-picker__input resposta-file" accept="${ANEXO_ACCEPT}">
+          </label>
+          <span class="anexo-picker__nome resposta-arquivo"></span>
+          <button type="button" class="btn-remover resposta-limpar" hidden>remover</button>
+          <button type="button" class="btn btn--primary btn--small resposta-enviar">Enviar resposta</button>
+        </div>
+        <span class="form-msg resposta-msg"></span>
+      </div>
     </div>
+    ${rodapeHtml(it, true)}
   `;
 
   card.querySelectorAll(".resposta-remover").forEach((btn) => {
@@ -1073,50 +1098,91 @@ function buildInjecaoCard(it, celulaId) {
     });
   });
 
+  const rascunho = rascunhosResposta.get(chave) || { texto: "", arquivo: null };
   const respostaTexto = card.querySelector(".resposta-texto");
-  respostaTexto.value = rascunhosResposta.get(chave) || "";
+  const respostaFile = card.querySelector(".resposta-file");
+  const arquivoNome = card.querySelector(".resposta-arquivo");
+  const btnLimpar = card.querySelector(".resposta-limpar");
+  const btnEnviar = card.querySelector(".resposta-enviar");
+  const respostaMsg = card.querySelector(".resposta-msg");
+
+  function mostrarArquivo() {
+    arquivoNome.textContent = rascunho.arquivo
+      ? `${rascunho.arquivo.name} (${formatBytes(rascunho.arquivo.size)})`
+      : "Nenhum arquivo selecionado";
+    btnLimpar.hidden = !rascunho.arquivo;
+  }
+
+  respostaTexto.value = rascunho.texto;
+  mostrarArquivo();
+  if (respostasEnviando.has(chave)) {
+    respostaTexto.disabled = btnEnviar.disabled = btnLimpar.disabled = respostaFile.disabled = true;
+    respostaMsg.textContent = "Enviando resposta...";
+  }
+
   respostaTexto.addEventListener("input", () => {
-    rascunhosResposta.set(chave, respostaTexto.value);
+    rascunho.texto = respostaTexto.value;
+    rascunhosResposta.set(chave, rascunho);
   });
 
-  const respostaFile = card.querySelector(".resposta-file");
-  const respostaMsg = card.querySelector(".resposta-msg");
-  respostaFile.addEventListener("change", async () => {
+  respostaFile.addEventListener("change", () => {
     const file = respostaFile.files[0];
+    respostaFile.value = "";
     if (!file) return;
-    respostaMsg.classList.remove("error");
+    limparMsg(respostaMsg);
+    const erro = validateAnexo(file);
+    if (erro) return mostrarErro(respostaMsg, erro);
+    rascunho.arquivo = file;
+    rascunhosResposta.set(chave, rascunho);
+    mostrarArquivo();
+  });
 
+  btnLimpar.addEventListener("click", () => {
+    rascunho.arquivo = null;
+    rascunhosResposta.set(chave, rascunho);
+    mostrarArquivo();
+  });
+
+  btnEnviar.addEventListener("click", async () => {
+    limparMsg(respostaMsg);
     const texto = respostaTexto.value.trim();
-    const erro = !texto
-      ? "Preencha para quem, o assunto e as demais informações antes de anexar."
-      : validateAnexo(file);
-    if (erro) {
-      respostaMsg.textContent = erro;
-      respostaMsg.classList.add("error");
-      respostaFile.value = "";
+    const arquivo = rascunho.arquivo;
+    if (!texto || !arquivo) {
+      mostrarErro(respostaMsg,
+        !texto && !arquivo ? "Escreva o texto (para quem, assunto...) e escolha o arquivo antes de enviar." :
+        !texto ? "Escreva o texto (para quem, assunto...) antes de enviar." :
+        "Escolha o arquivo da resposta antes de enviar.");
       if (!texto) respostaTexto.focus();
       return;
     }
 
-    respostaFile.disabled = true;
-    respostaTexto.disabled = true;
-    respostaMsg.textContent = "Enviando arquivo...";
+    respostasEnviando.add(chave);
+    respostaTexto.disabled = btnEnviar.disabled = btnLimpar.disabled = respostaFile.disabled = true;
+    respostaMsg.textContent = "Enviando resposta...";
+    let aviso = null;
     try {
-      const anexo = await uploadAnexo(file);
-      // Limpa o rascunho antes de gravar: o listener re-renderiza o cartão
-      // já com a nova resposta e a caixa vazia.
+      const anexo = await uploadAnexo(arquivo);
       rascunhosResposta.delete(chave);
       await updateDoc(doc(db, "injecoes", it.id), {
         respostas: arrayUnion({ ...anexo, celula: celulaId, texto, enviadoEm: Date.now() })
       });
+      aviso = { texto: "Resposta enviada.", erro: false };
     } catch (err) {
-      console.error("Erro ao anexar resposta:", err);
-      rascunhosResposta.set(chave, texto);
-      respostaMsg.textContent = "Erro ao enviar. Tente novamente.";
-      respostaMsg.classList.add("error");
-      respostaFile.disabled = false;
-      respostaTexto.disabled = false;
-      respostaFile.value = "";
+      console.error("Erro ao enviar resposta:", err);
+      rascunhosResposta.set(chave, { texto, arquivo });
+      aviso = { texto: "Erro ao enviar. Tente novamente.", erro: true };
+    } finally {
+      respostasEnviando.delete(chave);
+    }
+
+    // O cartão pode ter sido recriado pelo tempo real durante o envio:
+    // re-renderiza e mostra o aviso no cartão atual.
+    renderDirex();
+    const atual = document.querySelector(`.resposta-texto[data-chave="${chave}"]`);
+    const msgAtual = atual && atual.closest(".resposta-form").querySelector(".resposta-msg");
+    if (msgAtual) {
+      if (aviso.erro) mostrarErro(msgAtual, aviso.texto);
+      else msgAtual.textContent = aviso.texto;
     }
   });
 
@@ -1191,21 +1257,14 @@ function buildMensagemCard(m, celulaAtual, comAcoes) {
   card.className = "injecao-card mensagem-card";
 
   card.innerHTML = `
-    <div class="injecao-card__head">
-      <span class="injecao-card__gdh mono">${escapeHtml(m.gdh || "—")}</span>
-      <span class="injecao-card__origem">${escapeHtml(m.origem || "")}</span>
+    ${cabecalhoHtml('<span class="pill pill--mensagem">Mensagem</span>', m.gdh, m.origem)}
+    <div class="injecao-card__resumo">${escapeHtml(m.assunto || "")}</div>
+    ${m.texto ? `<div class="caixa-texto${comAcoes ? " lancamento__texto" : ""}">${escapeHtml(m.texto)}</div>` : ""}
+    <div class="info-grid">
+      ${m.anexo ? infoHtml("Arquivo da mensagem", anexoLinkHtml(m.anexo)) : ""}
+      ${infoHtml("Destinatários", `<div class="chips">${destinosChipsHtml(m, celulaAtual)}</div>`)}
     </div>
-    <div class="mensagem-card__assunto">${escapeHtml(m.assunto || "")}</div>
-    ${m.texto ? `<div class="mensagem-card__texto${comAcoes ? " lancamento__texto" : ""}">${escapeHtml(m.texto)}</div>` : ""}
-    ${m.anexo ? `<div class="anexo-block"><span class="anexo-block__label">Arquivo da mensagem</span>${anexoLinkHtml(m.anexo)}</div>` : ""}
-    <div class="chips mensagem-card__destinos"><span class="chips__progresso">Para:</span>${destinosChipsHtml(m, celulaAtual)}</div>
-    <div class="injecao-card__footer">
-      <span class="injecao-card__autor">${autorDataHtml(m)}</span>
-      ${comAcoes ? `
-        <button type="button" class="btn btn--ghost btn--small btn-editar">Editar</button>
-        <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
-      ` : ""}
-    </div>
+    ${rodapeHtml(m, comAcoes)}
   `;
 
   if (comAcoes) {
@@ -1250,30 +1309,36 @@ function buildKanbanCard(it) {
   card.className = "kanban-card";
   card.dataset.urgencia = it.urgencia;
 
-  // Situação por célula: quem já respondeu (com link para baixar) e quem
-  // ainda está pendente.
-  const celulasHtml = celulasRoteadas(it).map((c) => {
+  // Situação por célula: quem já respondeu (texto + arquivo da resposta)
+  // e quem ainda está pendente.
+  const roteadas = celulasRoteadas(it);
+  const qtdRespondidas = roteadas.filter((c) => celulaRespondeu(it, c.id)).length;
+  const celulasHtml = roteadas.map((c) => {
     const respostas = respostasDaCelula(it, c.id);
     const respondeu = respostas.length > 0;
+    const prazo = it.celulas[c.id].texto;
     return `
       <div class="kanban-celula kanban-celula--${respondeu ? "ok" : "pendente"}">
-        <span class="kanban-celula__status">${respondeu ? "✓" : "⏳"}</span>
-        <span class="kanban-celula__abrev mono">${c.abrev}</span>
-        <span class="kanban-celula__info">${respondeu
-          ? respostas.map(anexoLinkHtml).join("")
-          : '<span class="kanban-celula__pendente">pendente</span>'}</span>
+        <div class="kanban-celula__head">
+          <span class="kanban-celula__status">${respondeu ? "✓" : "⏳"}</span>
+          <span class="kanban-celula__abrev mono">${c.abrev}</span>
+          <span class="kanban-celula__nome">${escapeHtml(c.nome)}</span>
+          <span class="kanban-celula__estado">${respondeu ? "Respondeu" : "Pendente"}</span>
+        </div>
+        ${prazo ? `<div class="kanban-celula__prazo"><span class="rotulo">Prazo</span>${escapeHtml(prazo)}</div>` : ""}
+        ${respostas.map((r) => respostaHtml(r, false)).join("")}
       </div>
     `;
   }).join("");
 
   card.innerHTML = `
-    <div class="kanban-card__head">
-      <span class="pill pill--${it.urgencia}">${URGENCIA_LABEL[it.urgencia] || it.urgencia}</span>
-      <span class="kanban-card__gdh mono">${escapeHtml(it.gdh || "—")}</span>
+    ${cabecalhoHtml(urgenciaPill(it.urgencia), it.gdh, it.origem)}
+    <div class="injecao-card__resumo">${escapeHtml(it.resumo || "")}</div>
+    ${it.anexo ? `<div class="info-grid">${infoHtml("Arquivo do PMS", anexoLinkHtml(it.anexo))}</div>` : ""}
+    <div class="bloco">
+      <span class="rotulo">Situação por célula · ${qtdRespondidas}/${roteadas.length} responderam</span>
+      <div class="kanban-celulas">${celulasHtml}</div>
     </div>
-    <div class="kanban-card__resumo">${escapeHtml(it.resumo || "")}</div>
-    ${it.anexo ? `<div class="kanban-card__anexo">PMS: ${anexoLinkHtml(it.anexo)}</div>` : ""}
-    <div class="kanban-celulas">${celulasHtml}</div>
   `;
 
   return card;
