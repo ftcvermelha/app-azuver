@@ -93,11 +93,17 @@ const STATUS_LABEL = {
 
 // ---------------------------------------------------------------------
 // Status do PMS — derivado das respostas, nunca editado à mão:
-// fica "pronta" só quando TODAS as células roteadas anexaram resposta.
+// fica "pronta" só quando TODAS as células roteadas enviaram resposta.
 // ---------------------------------------------------------------------
 
 function celulasRoteadas(it) {
   return CELULAS.filter((c) => it.celulas && it.celulas[c.id] && it.celulas[c.id].sel);
+}
+
+// Respostas antigas são identificadas pelo arquivo; as novas têm "id"
+// próprio, porque podem ser só texto.
+function idResposta(r) {
+  return r.id || r.arquivoId;
 }
 
 function respostasDaCelula(it, celulaId) {
@@ -570,7 +576,7 @@ async function salvarEdicao(dados) {
     await updateDoc(doc(db, "injecoes", edicao.id), alteracoes);
 
     // Melhor esforço: apaga o arquivo substituído/removido e os das respostas descartadas.
-    const lixo = descartado ? [...orfas, descartado] : orfas;
+    const lixo = (descartado ? [...orfas, descartado] : orfas).filter((a) => a.arquivoId);
     await Promise.allSettled(lixo.map(deleteAnexo));
 
     limparFormPms();
@@ -813,15 +819,15 @@ function rodapeHtml(item, comAcoes) {
   `;
 }
 
-// Resposta de uma célula: texto (para quem, assunto...) e o arquivo.
+// Resposta de uma célula: texto (para quem, assunto...) e/ou arquivo.
 function respostaHtml(r, comRemover) {
   return `
     <div class="resposta">
       ${r.texto ? `<div class="resposta__texto">${escapeHtml(r.texto)}</div>` : ""}
       <div class="resposta__rodape">
-        ${anexoLinkHtml(r)}
+        ${r.arquivoId ? anexoLinkHtml(r) : ""}
         ${r.enviadoEm ? `<span class="resposta__data">enviada ${formatTimestamp(r.enviadoEm)}</span>` : ""}
-        ${comRemover ? `<button type="button" class="btn-remover resposta-remover" data-arquivo-id="${escapeHtml(r.arquivoId)}">remover</button>` : ""}
+        ${comRemover ? `<button type="button" class="btn-remover resposta-remover" data-resposta-id="${escapeHtml(idResposta(r))}">remover</button>` : ""}
       </div>
     </div>
   `;
@@ -1028,8 +1034,8 @@ function buildPmsLinha(it) {
 }
 
 // Cartão de um PMS dentro da seção de uma célula: mostra o prazo, as
-// respostas e o envio de resposta dessa célula (texto + arquivo, que só
-// são gravados ao clicar em "Enviar resposta").
+// respostas e o envio de resposta dessa célula (texto e/ou arquivo, que
+// só são gravados ao clicar em "Enviar resposta").
 function buildInjecaoCard(it, celulaId) {
   const card = document.createElement("article");
   card.className = "injecao-card";
@@ -1080,16 +1086,19 @@ function buildInjecaoCard(it, celulaId) {
 
   card.querySelectorAll(".resposta-remover").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const resposta = (it.respostas || []).find((r) => r.arquivoId === btn.dataset.arquivoId);
+      const resposta = (it.respostas || []).find((r) => idResposta(r) === btn.dataset.respostaId);
       if (!resposta) return;
       const abrev = CELULA_MAP[resposta.celula] ? CELULA_MAP[resposta.celula].abrev : resposta.celula;
-      const ok = window.confirm(`Remover a resposta "${resposta.nome}" da ${abrev}? O PMS volta a ficar pendente para esta célula se não houver outra resposta dela.`);
+      const qual = resposta.nome ? `a resposta "${resposta.nome}"` : "esta resposta";
+      const ok = window.confirm(`Remover ${qual} da ${abrev}? O PMS volta a ficar pendente para esta célula se não houver outra resposta dela.`);
       if (!ok) return;
       btn.disabled = true;
       try {
         // arrayRemove exige o objeto idêntico ao gravado.
         await updateDoc(doc(db, "injecoes", it.id), { respostas: arrayRemove(resposta) });
-        await deleteAnexo(resposta).catch((err) => console.error("Erro ao apagar arquivo da resposta:", err));
+        if (resposta.arquivoId) {
+          await deleteAnexo(resposta).catch((err) => console.error("Erro ao apagar arquivo da resposta:", err));
+        }
       } catch (err) {
         console.error("Erro ao remover resposta:", err);
         btn.disabled = false;
@@ -1147,12 +1156,9 @@ function buildInjecaoCard(it, celulaId) {
     limparMsg(respostaMsg);
     const texto = respostaTexto.value.trim();
     const arquivo = rascunho.arquivo;
-    if (!texto || !arquivo) {
-      mostrarErro(respostaMsg,
-        !texto && !arquivo ? "Escreva o texto (para quem, assunto...) e escolha o arquivo antes de enviar." :
-        !texto ? "Escreva o texto (para quem, assunto...) antes de enviar." :
-        "Escolha o arquivo da resposta antes de enviar.");
-      if (!texto) respostaTexto.focus();
+    if (!texto && !arquivo) {
+      mostrarErro(respostaMsg, "Escreva a resposta ou escolha um arquivo.");
+      respostaTexto.focus();
       return;
     }
 
@@ -1161,10 +1167,10 @@ function buildInjecaoCard(it, celulaId) {
     respostaMsg.textContent = "Enviando resposta...";
     let aviso = null;
     try {
-      const anexo = await uploadAnexo(arquivo);
+      const anexo = arquivo ? await uploadAnexo(arquivo) : {};
       rascunhosResposta.delete(chave);
       await updateDoc(doc(db, "injecoes", it.id), {
-        respostas: arrayUnion({ ...anexo, celula: celulaId, texto, enviadoEm: Date.now() })
+        respostas: arrayUnion({ id: crypto.randomUUID(), ...anexo, celula: celulaId, texto, enviadoEm: Date.now() })
       });
       aviso = { texto: "Resposta enviada.", erro: false };
     } catch (err) {
@@ -1309,7 +1315,7 @@ function buildKanbanCard(it) {
   card.className = "kanban-card";
   card.dataset.urgencia = it.urgencia;
 
-  // Situação por célula: quem já respondeu (texto + arquivo da resposta)
+  // Situação por célula: quem já respondeu (texto e/ou arquivo da resposta)
   // e quem ainda está pendente.
   const roteadas = celulasRoteadas(it);
   const qtdRespondidas = roteadas.filter((c) => celulaRespondeu(it, c.id)).length;
