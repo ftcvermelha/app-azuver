@@ -104,13 +104,13 @@
       </div>
 
       <div class="field">
-        <label>Arquivo do PMS (opcional)</label>
+        <label>Arquivos do PMS (opcional)</label>
         <div class="anexo-picker">
-          <label class="btn btn--ghost btn--small anexo-picker__btn" for="inAnexo" id="inAnexoBtn">Anexar arquivo (DOCX/PDF, até 10 MB)</label>
-          <input type="file" id="inAnexo" class="anexo-picker__input" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-          <span id="inAnexoNome" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
-          <button type="button" id="inAnexoLimpar" class="btn-remover" hidden>remover</button>
+          <label class="btn btn--ghost btn--small anexo-picker__btn" for="inAnexo" id="inAnexoBtn">Anexar arquivos (DOCX/PDF, até 10 MB cada)</label>
+          <input type="file" id="inAnexo" class="anexo-picker__input" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+          <span id="inAnexoInfo" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
         </div>
+        <ul id="inAnexoLista" class="arquivos arquivos--edicao" hidden></ul>
       </div>
       </div>
 
@@ -156,18 +156,18 @@
       </div>
 
       <div class="field">
-        <label>Arquivo da mensagem (opcional)</label>
+        <label>Arquivos da mensagem (opcional)</label>
         <div class="anexo-picker">
-          <label class="btn btn--ghost btn--small anexo-picker__btn" for="msgAnexo" id="msgAnexoBtn">Anexar arquivo (DOCX/PDF, até 10 MB)</label>
-          <input type="file" id="msgAnexo" class="anexo-picker__input" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-          <span id="msgAnexoNome" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
-          <button type="button" id="msgAnexoLimpar" class="btn-remover" hidden>remover</button>
+          <label class="btn btn--ghost btn--small anexo-picker__btn" for="msgAnexo" id="msgAnexoBtn">Anexar arquivos (DOCX/PDF, até 10 MB cada)</label>
+          <input type="file" id="msgAnexo" class="anexo-picker__input" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+          <span id="msgAnexoInfo" class="anexo-picker__nome">Nenhum arquivo selecionado</span>
         </div>
+        <ul id="msgAnexoLista" class="arquivos arquivos--edicao" hidden></ul>
       </div>
 
       <div class="field">
         <label for="msgTexto">Texto da mensagem</label>
-        <textarea id="msgTexto" rows="6" placeholder="Escreva ou cole aqui o texto da mensagem (opcional se houver arquivo anexado)..."></textarea>
+        <textarea id="msgTexto" rows="6" placeholder="Escreva ou cole aqui o texto da mensagem (opcional se houver arquivos anexados)..."></textarea>
       </div>
 
       <div class="field">
@@ -266,6 +266,19 @@
     <textarea class="celula-block__texto" rows="2" placeholder="Prazo (ex: 251800ZOUT26)" hidden></textarea>
   </div>
 </template>
+
+<!-- Visualizador de anexos (PDF/DOCX) -->
+<dialog id="visualizador" class="visualizador" aria-labelledby="visNome">
+  <div class="visualizador__head">
+    <span class="arquivo__tipo" id="visTipo"></span>
+    <span class="visualizador__nome" id="visNome"></span>
+    <span class="visualizador__acoes">
+      <button type="button" id="visBaixar" class="btn btn--ghost btn--small">Baixar</button>
+      <button type="button" id="visFechar" class="btn btn--primary btn--small" autofocus>Fechar</button>
+    </span>
+  </div>
+  <div class="visualizador__corpo" id="visCorpo"></div>
+</dialog>
 
 <script type="module" src="app.js"></script>
 </body>

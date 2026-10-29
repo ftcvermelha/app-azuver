@@ -26,6 +26,7 @@ import {
   onSnapshot,
   query,
   orderBy,
+  deleteField,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
@@ -193,16 +194,29 @@ function validateRequiredFields(fields) {
 // fatiados em partes de até 900 KB, pois cada documento tem limite de 1 MiB:
 //   arquivos/<id>               { nome, tipo, tamanho, partes }
 //   arquivos/<id>/partes/<n>    { dados: Bytes }
-// O PMS guarda só a referência: { nome, arquivoId, tamanho }.
+// PMS, mensagens e respostas guardam só as referências, em
+// anexos: [{ nome, arquivoId, tamanho }] (até ANEXOS_MAX).
 // ---------------------------------------------------------------------
 
-const ANEXO_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const ANEXO_MAX_BYTES = 10 * 1024 * 1024; // 10 MB por arquivo
 const ANEXO_PARTE_BYTES = 900 * 1024;
+const ANEXOS_MAX = 10; // por PMS, mensagem ou resposta
 const ANEXO_TIPOS = {
   pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 };
 const ANEXO_ACCEPT = ".pdf,.docx," + Object.values(ANEXO_TIPOS).join(",");
+
+// Anexos de um PMS ou mensagem. Os antigos tinham um só, em "anexo".
+function anexosDe(item) {
+  return item.anexos || (item.anexo ? [item.anexo] : []);
+}
+
+// Anexos de uma resposta. As antigas guardavam o arquivo nos próprios campos.
+function anexosDaResposta(r) {
+  if (r.anexos) return r.anexos;
+  return r.arquivoId ? [{ nome: r.nome, arquivoId: r.arquivoId, tamanho: r.tamanho }] : [];
+}
 
 // Retorna mensagem de erro, ou null se o arquivo é aceitável.
 function validateAnexo(file) {
@@ -210,6 +224,22 @@ function validateAnexo(file) {
   if (!ANEXO_TIPOS[ext]) return "Apenas arquivos DOCX ou PDF são aceitos.";
   if (file.size > ANEXO_MAX_BYTES) return "Arquivo maior que 10 MB.";
   return null;
+}
+
+// Separa os arquivos escolhidos que podem ser anexados, respeitando o
+// limite de ANEXOS_MAX; `erro` explica os recusados (ou fica vazio).
+function filtrarArquivos(files, jaAnexados) {
+  const aceitos = [];
+  const erros = [];
+  let excedeu = false;
+  files.forEach((f) => {
+    const erro = validateAnexo(f);
+    if (erro) erros.push(`${f.name}: ${erro}`);
+    else if (jaAnexados + aceitos.length >= ANEXOS_MAX) excedeu = true;
+    else aceitos.push(f);
+  });
+  if (excedeu) erros.push(`Limite de ${ANEXOS_MAX} arquivos atingido.`);
+  return { aceitos, erro: erros.join(" ") };
 }
 
 async function uploadAnexo(file) {
@@ -234,7 +264,23 @@ async function uploadAnexo(file) {
   return { nome: file.name, arquivoId: arquivoRef.id, tamanho: file.size };
 }
 
-async function downloadAnexo(arquivoId) {
+// Envia os arquivos um a um, mostrando o progresso. Se algum falhar, os
+// já enviados são apagados para não ficarem órfãos.
+async function enviarArquivos(files, msgEl) {
+  const anexos = [];
+  try {
+    for (let i = 0; i < files.length; i++) {
+      msgEl.textContent = files.length > 1 ? `Enviando arquivo ${i + 1} de ${files.length}...` : "Enviando arquivo...";
+      anexos.push(await uploadAnexo(files[i]));
+    }
+  } catch (err) {
+    await Promise.allSettled(anexos.map(deleteAnexo));
+    throw err;
+  }
+  return anexos;
+}
+
+async function carregarAnexo(arquivoId) {
   const arquivoRef = doc(db, "arquivos", arquivoId);
   const meta = await getDoc(arquivoRef);
   if (!meta.exists()) throw new Error("Arquivo não encontrado.");
@@ -244,7 +290,10 @@ async function downloadAnexo(arquivoId) {
     Array.from({ length: partes }, (_, i) => getDoc(doc(arquivoRef, "partes", String(i))))
   );
   const blob = new Blob(snaps.map((p) => p.data().dados.toUint8Array()), { type: tipo });
+  return { nome, tipo, blob };
+}
 
+function salvarBlob(nome, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -271,98 +320,297 @@ function formatBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1).replace(".", ",")} MB`;
 }
 
-function anexoLinkHtml(anexo) {
-  const ext = (anexo.nome || "").split(".").pop().toUpperCase();
-  return `<span class="arquivo"><span class="arquivo__tipo">${escapeHtml(ext)}</span>` +
-    `<button type="button" class="anexo-link" data-arquivo-id="${escapeHtml(anexo.arquivoId)}">${escapeHtml(anexo.nome)}</button>` +
-    `<span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span></span>`;
+function extensao(nome) {
+  return (nome || "").split(".").pop().toUpperCase();
 }
 
-// Delegação: qualquer link de anexo na página dispara o download.
+// Arquivo anexado: [PDF] nome  12 KB          Visualizar · Baixar
+function anexoHtml(anexo) {
+  const id = escapeHtml(anexo.arquivoId);
+  const nome = escapeHtml(anexo.nome);
+  return `
+    <div class="arquivo">
+      <span class="arquivo__tipo">${escapeHtml(extensao(anexo.nome))}</span>
+      <span class="arquivo__nome">${nome}</span>
+      <span class="anexo-link__tam">${formatBytes(anexo.tamanho)}</span>
+      <span class="arquivo__acoes">
+        <button type="button" class="anexo-acao" data-visualizar="${id}" data-nome="${nome}">Visualizar</button>
+        <button type="button" class="anexo-acao" data-baixar="${id}">Baixar</button>
+      </span>
+    </div>
+  `;
+}
+
+function anexosHtml(anexos) {
+  return `<div class="arquivos">${anexos.map(anexoHtml).join("")}</div>`;
+}
+
+// Informação "Arquivo(s) do PMS/da mensagem" no padrão dos cartões.
+function infoAnexosHtml(rotuloSingular, rotuloPlural, anexos) {
+  if (anexos.length === 0) return "";
+  return infoHtml(anexos.length === 1 ? rotuloSingular : rotuloPlural, anexosHtml(anexos));
+}
+
+// Delegação: qualquer "Visualizar" ou "Baixar" de anexo na página.
 document.addEventListener("click", async (e) => {
-  const link = e.target.closest(".anexo-link[data-arquivo-id]");
-  if (!link || link.disabled) return;
-  const textoOriginal = link.textContent;
-  link.disabled = true;
-  link.textContent = "Baixando...";
+  const ver = e.target.closest("[data-visualizar]");
+  if (ver) return visualizarAnexo(ver.dataset.visualizar, ver.dataset.nome);
+
+  const baixar = e.target.closest("[data-baixar]");
+  if (!baixar || baixar.disabled) return;
+  const textoOriginal = baixar.textContent;
+  baixar.disabled = true;
+  baixar.textContent = "Baixando...";
   try {
-    await downloadAnexo(link.dataset.arquivoId);
+    const { nome, blob } = await carregarAnexo(baixar.dataset.baixar);
+    salvarBlob(nome, blob);
   } catch (err) {
     console.error("Erro ao baixar anexo:", err);
     window.alert("Erro ao baixar o arquivo. Tente novamente.");
   } finally {
-    link.disabled = false;
-    link.textContent = textoOriginal;
+    baixar.disabled = false;
+    baixar.textContent = textoOriginal;
   }
 });
 
 // ---------------------------------------------------------------------
-// Seletor de anexo (DOCX/PDF) dos formulários. Na edição, `carregar`
-// mostra o arquivo atual, que pode ser mantido, substituído ou removido.
+// Visualizador de anexos — janela sobre a tela, sem baixar o arquivo.
+// PDF: visualizador do navegador no computador; nos celulares (que não
+// mostram PDF dentro da página) as páginas são desenhadas pelo PDF.js.
+// DOCX: convertido para a tela pelo docx-preview (formatação aproximada).
+// As bibliotecas só são carregadas na primeira visualização.
 // ---------------------------------------------------------------------
 
+const PDFJS_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
+const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+const JSZIP_URL = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
+const DOCX_PREVIEW_URL = "https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js";
+const PDF_LARGURA_MAX = 1600; // px do desenho de cada página (memória no celular)
+
+const visualizador = document.getElementById("visualizador");
+const visTipo = document.getElementById("visTipo");
+const visNome = document.getElementById("visNome");
+const visBaixar = document.getElementById("visBaixar");
+const visCorpo = document.getElementById("visCorpo");
+
+let visAtual = null; // { token, nome, blob, url } do documento aberto
+
+function visAberto(token) {
+  return visAtual && visAtual.token === token;
+}
+
+function usarPdfNativo() {
+  return navigator.pdfViewerEnabled && !window.matchMedia("(pointer: coarse)").matches;
+}
+
+// Carregamento único de cada biblioteca; em caso de falha, tenta de novo na próxima vez.
+function carregarUmaVez(carregar) {
+  let promessa = null;
+  return () => {
+    promessa ||= carregar().catch((err) => {
+      promessa = null;
+      throw err;
+    });
+    return promessa;
+  };
+}
+
+function carregarScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`Falha ao carregar ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+const carregarPdfJs = carregarUmaVez(async () => {
+  const pdfjs = await import(PDFJS_URL);
+  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  return pdfjs;
+});
+
+const carregarDocxPreview = carregarUmaVez(async () => {
+  if (!window.JSZip) await carregarScript(JSZIP_URL);
+  if (!window.docx) await carregarScript(DOCX_PREVIEW_URL);
+  return window.docx;
+});
+
+function avisoVisualizador(texto, erro = false) {
+  visCorpo.innerHTML = `<p class="visualizador__aviso${erro ? " error" : ""}">${texto}</p>`;
+}
+
+async function visualizarAnexo(arquivoId, nome) {
+  const token = {};
+  visAtual = { token, nome, blob: null, url: null };
+  visTipo.textContent = extensao(nome);
+  visNome.textContent = nome;
+  visNome.title = nome;
+  visBaixar.disabled = true;
+  avisoVisualizador("Carregando documento...");
+  if (!visualizador.open) visualizador.showModal();
+
+  try {
+    const arquivo = await carregarAnexo(arquivoId);
+    if (!visAberto(token)) return;
+    Object.assign(visAtual, { nome: arquivo.nome, blob: arquivo.blob });
+    visBaixar.disabled = false;
+    if (arquivo.tipo === ANEXO_TIPOS.pdf) await mostrarPdf(arquivo.blob, token);
+    else await mostrarDocx(arquivo.blob, token);
+  } catch (err) {
+    console.error("Erro ao visualizar anexo:", err);
+    if (visAberto(token)) avisoVisualizador('Não foi possível abrir o documento aqui. Use "Baixar".', true);
+  }
+}
+
+async function mostrarPdf(blob, token) {
+  if (usarPdfNativo()) {
+    visAtual.url = URL.createObjectURL(blob);
+    visCorpo.innerHTML = '<iframe class="visualizador__pdf" title="Documento PDF"></iframe>';
+    visCorpo.firstElementChild.src = visAtual.url;
+    return;
+  }
+
+  const pdfjs = await carregarPdfJs();
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+  try {
+    if (!visAberto(token)) return;
+    visCorpo.innerHTML = '<div class="visualizador__paginas"></div>';
+    const paginas = visCorpo.firstElementChild;
+    const largura = Math.min(paginas.clientWidth * (window.devicePixelRatio || 1), PDF_LARGURA_MAX);
+    for (let n = 1; n <= pdf.numPages && visAberto(token); n++) {
+      const pagina = await pdf.getPage(n);
+      const viewport = pagina.getViewport({ scale: largura / pagina.getViewport({ scale: 1 }).width });
+      const canvas = document.createElement("canvas");
+      canvas.className = "visualizador__pagina";
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      paginas.appendChild(canvas);
+      await pagina.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    }
+  } finally {
+    pdf.destroy();
+  }
+}
+
+async function mostrarDocx(blob, token) {
+  const docx = await carregarDocxPreview();
+  if (!visAberto(token)) return;
+  visCorpo.innerHTML = '<div class="visualizador__docx"></div>';
+  // Tela estreita: o texto se ajusta à largura em vez da folha A4 inteira.
+  await docx.renderAsync(blob, visCorpo.firstElementChild, null, {
+    className: "docx",
+    inWrapper: true,
+    ignoreWidth: visCorpo.clientWidth < 820,
+    ignoreHeight: true,
+    breakPages: true
+  });
+}
+
+visBaixar.addEventListener("click", () => {
+  if (visAtual && visAtual.blob) salvarBlob(visAtual.nome, visAtual.blob);
+});
+
+document.getElementById("visFechar").addEventListener("click", () => visualizador.close());
+
+// Clique fora do documento (no fundo escurecido) também fecha.
+visualizador.addEventListener("click", (e) => {
+  if (e.target === visualizador) visualizador.close();
+});
+
+visualizador.addEventListener("close", () => {
+  if (visAtual && visAtual.url) URL.revokeObjectURL(visAtual.url);
+  visAtual = null;
+  visCorpo.innerHTML = "";
+});
+
+// ---------------------------------------------------------------------
+// Seleção de vários arquivos (formulários e respostas): botão de
+// escolher, contagem e lista com "remover" em cada arquivo.
+// ---------------------------------------------------------------------
+
+// itens: [{ nome, tamanho, remover }]
+function renderListaArquivos(lista, infoEl, itens) {
+  lista.innerHTML = "";
+  lista.hidden = itens.length === 0;
+  infoEl.textContent = itens.length === 0
+    ? "Nenhum arquivo selecionado"
+    : `${plural(itens.length, "arquivo", "arquivos")} · máximo ${ANEXOS_MAX}`;
+  itens.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = "arquivo";
+    li.innerHTML = `
+      <span class="arquivo__tipo">${escapeHtml(extensao(item.nome))}</span>
+      <span class="arquivo__nome">${escapeHtml(item.nome)}</span>
+      <span class="anexo-link__tam">${formatBytes(item.tamanho)}</span>
+      <span class="arquivo__acoes"><button type="button" class="btn-remover">remover</button></span>
+    `;
+    li.querySelector(".btn-remover").addEventListener("click", item.remover);
+    lista.appendChild(li);
+  });
+}
+
+// Seletor dos formulários (PMS e Mensagem). Na edição, `carregar` mostra
+// os arquivos atuais, que podem ser mantidos ou removidos um a um.
 function criarAnexoPicker(prefixo, msgEl) {
   const input = document.getElementById(`${prefixo}Anexo`);
-  const nomeEl = document.getElementById(`${prefixo}AnexoNome`);
-  const limparBtn = document.getElementById(`${prefixo}AnexoLimpar`);
+  const infoEl = document.getElementById(`${prefixo}AnexoInfo`);
+  const lista = document.getElementById(`${prefixo}AnexoLista`);
   const botao = document.getElementById(`${prefixo}AnexoBtn`);
-  const picker = { atual: null, removerAtual: false };
+  const picker = { atuais: [], novos: [], removidos: [] };
 
-  picker.arquivo = () => input.files[0] || null;
-  picker.mantido = () => (picker.atual && !picker.removerAtual ? picker.atual : null);
-  picker.reset = () => {
-    input.value = "";
-    const atual = picker.mantido();
-    nomeEl.textContent = atual
-      ? `Atual: ${atual.nome} (${formatBytes(atual.tamanho)})`
-      : "Nenhum arquivo selecionado";
-    limparBtn.hidden = !atual;
-    botao.textContent = atual ? "Substituir arquivo (DOCX/PDF, até 10 MB)" : "Anexar arquivo (DOCX/PDF, até 10 MB)";
-  };
-  picker.carregar = (anexo) => {
-    picker.atual = anexo || null;
-    picker.removerAtual = false;
-    picker.reset();
+  picker.total = () => picker.atuais.length + picker.novos.length;
+
+  function render() {
+    renderListaArquivos(lista, infoEl, [
+      ...picker.atuais.map((a) => ({
+        nome: a.nome,
+        tamanho: a.tamanho,
+        remover: () => {
+          picker.atuais = picker.atuais.filter((x) => x !== a);
+          picker.removidos.push(a);
+          render();
+        }
+      })),
+      ...picker.novos.map((f) => ({
+        nome: f.name,
+        tamanho: f.size,
+        remover: () => {
+          picker.novos = picker.novos.filter((x) => x !== f);
+          render();
+        }
+      }))
+    ]);
+    const cheio = picker.total() >= ANEXOS_MAX;
+    input.disabled = cheio;
+    botao.classList.toggle("is-disabled", cheio);
+  }
+
+  picker.carregar = (anexos) => {
+    picker.atuais = [...anexos];
+    picker.novos = [];
+    picker.removidos = [];
+    render();
   };
 
   input.addEventListener("change", () => {
-    msgEl.textContent = "";
-    msgEl.classList.remove("error");
-    const file = input.files[0];
-    if (!file) return picker.reset();
-    const erro = validateAnexo(file);
-    if (erro) {
-      picker.reset();
-      msgEl.textContent = erro;
-      msgEl.classList.add("error");
-      return;
-    }
-    nomeEl.textContent = `${file.name} (${formatBytes(file.size)})`;
-    limparBtn.hidden = false;
-  });
-
-  // "remover": descarta o arquivo recém-escolhido; sem ele, na edição,
-  // marca o arquivo atual para ser apagado ao salvar.
-  limparBtn.addEventListener("click", () => {
-    if (!input.files[0] && picker.atual) picker.removerAtual = true;
-    picker.reset();
+    limparMsg(msgEl);
+    const { aceitos, erro } = filtrarArquivos([...input.files], picker.total());
+    input.value = "";
+    picker.novos.push(...aceitos);
+    render();
+    if (erro) mostrarErro(msgEl, erro);
   });
 
   return picker;
 }
 
-// Anexo final ao salvar: novo upload, o atual mantido ou nenhum. Devolve
-// também o anexo anterior que deixou de ser usado, para ser apagado.
-async function resolverAnexo(picker, msgEl) {
-  let anexo = picker.mantido();
-  if (picker.arquivo()) {
-    msgEl.textContent = "Enviando arquivo...";
-    anexo = await uploadAnexo(picker.arquivo());
-  }
-  const descartado = picker.atual && (!anexo || anexo.arquivoId !== picker.atual.arquivoId)
-    ? picker.atual
-    : null;
-  return { anexo, descartado };
+// Anexos finais ao salvar: os atuais mantidos + os novos enviados. Devolve
+// também os que foram removidos, para serem apagados depois de salvar.
+async function resolverAnexos(picker, msgEl) {
+  const novos = await enviarArquivos(picker.novos, msgEl);
+  return { anexos: [...picker.atuais, ...novos], descartados: [...picker.removidos] };
 }
 
 function limparMsg(msgEl) {
@@ -444,7 +692,7 @@ function limparFormPms() {
   });
   formNovaInjecao.querySelector('input[name="urgencia"][value="critico"]').checked = true;
   edicao = null;
-  pickerPms.carregar(null);
+  pickerPms.carregar([]);
   formNovaTitulo.textContent = "Registrar PMS";
   btnSubmitPms.textContent = "Enviar PMS";
   btnCancelarEdicao.hidden = true;
@@ -468,7 +716,7 @@ function iniciarEdicao(it) {
     ref.textarea.value = ref.checkbox.checked ? cel.texto || "" : "";
   });
 
-  pickerPms.carregar(it.anexo);
+  pickerPms.carregar(anexosDe(it));
   formNovaTitulo.textContent = `Editar PMS ${it.gdh || ""}`.trim();
   btnSubmitPms.textContent = "Salvar alterações";
   btnCancelarEdicao.hidden = false;
@@ -525,7 +773,7 @@ formNovaInjecao.addEventListener("submit", async (e) => {
 
   btnSubmitPms.disabled = true;
   try {
-    const { anexo } = await resolverAnexo(pickerPms, novaInjecaoMsg);
+    const { anexos } = await resolverAnexos(pickerPms, novaInjecaoMsg);
 
     await addDoc(collection(db, "injecoes"), {
       gdh,
@@ -534,7 +782,7 @@ formNovaInjecao.addEventListener("submit", async (e) => {
       urgencia,
       resumo,
       celulas,
-      anexo,
+      anexos,
       respostas: [],
       createdAt: serverTimestamp()
     });
@@ -569,14 +817,15 @@ async function salvarEdicao(dados) {
 
   btnSubmitPms.disabled = true;
   try {
-    const { anexo, descartado } = await resolverAnexo(pickerPms, novaInjecaoMsg);
+    const { anexos, descartados } = await resolverAnexos(pickerPms, novaInjecaoMsg);
 
-    const alteracoes = { ...dados, anexo, editadoEm: serverTimestamp() };
+    // "anexo" (um só arquivo) é o formato antigo, substituído por "anexos".
+    const alteracoes = { ...dados, anexos, anexo: deleteField(), editadoEm: serverTimestamp() };
     if (orfas.length > 0) alteracoes.respostas = arrayRemove(...orfas);
     await updateDoc(doc(db, "injecoes", edicao.id), alteracoes);
 
-    // Melhor esforço: apaga o arquivo substituído/removido e os das respostas descartadas.
-    const lixo = (descartado ? [...orfas, descartado] : orfas).filter((a) => a.arquivoId);
+    // Melhor esforço: apaga os arquivos removidos e os das respostas descartadas.
+    const lixo = [...descartados, ...orfas.flatMap(anexosDaResposta)];
     await Promise.allSettled(lixo.map(deleteAnexo));
 
     limparFormPms();
@@ -597,7 +846,7 @@ async function excluirPms(it, btn) {
   btn.disabled = true;
   try {
     await deleteDoc(doc(db, "injecoes", it.id));
-    const arquivos = [it.anexo, ...(it.respostas || [])].filter((a) => a && a.arquivoId);
+    const arquivos = [...anexosDe(it), ...(it.respostas || []).flatMap(anexosDaResposta)];
     // Melhor esforço: falha ao apagar um arquivo não impede a exclusão do PMS.
     await Promise.allSettled(arquivos.map(deleteAnexo));
   } catch (err) {
@@ -654,7 +903,7 @@ btnSelecionarTodas.addEventListener("click", () => {
 function limparFormMensagem() {
   formMensagem.reset();
   edicaoMsg = null;
-  pickerMsg.carregar(null);
+  pickerMsg.carregar([]);
   atualizarSelecionarTodas();
   formMensagemTitulo.textContent = "Registrar Mensagem";
   btnSubmitMsg.textContent = "Enviar Mensagem";
@@ -673,7 +922,7 @@ function iniciarEdicaoMensagem(m) {
   CELULAS.forEach((c) => (destinoChecks[c.id].checked = (m.destinos || []).includes(c.id)));
   atualizarSelecionarTodas();
 
-  pickerMsg.carregar(m.anexo);
+  pickerMsg.carregar(anexosDe(m));
   formMensagemTitulo.textContent = `Editar Mensagem ${m.gdh || ""}`.trim();
   btnSubmitMsg.textContent = "Salvar alterações";
   btnCancelarEdicaoMsg.hidden = false;
@@ -707,7 +956,7 @@ formMensagem.addEventListener("submit", async (e) => {
   }
 
   const texto = document.getElementById("msgTexto").value.trim();
-  if (!texto && !pickerMsg.mantido() && !pickerMsg.arquivo()) {
+  if (!texto && pickerMsg.total() === 0) {
     mostrarErro(mensagemMsg, "Escreva o texto da mensagem ou anexe um arquivo.");
     return;
   }
@@ -729,14 +978,15 @@ formMensagem.addEventListener("submit", async (e) => {
 
   btnSubmitMsg.disabled = true;
   try {
-    const { anexo, descartado } = await resolverAnexo(pickerMsg, mensagemMsg);
+    const { anexos, descartados } = await resolverAnexos(pickerMsg, mensagemMsg);
     if (edicaoMsg) {
-      await updateDoc(doc(db, "mensagens", edicaoMsg.id), { ...dados, anexo, editadoEm: serverTimestamp() });
-      if (descartado) await deleteAnexo(descartado).catch((err) => console.error("Erro ao apagar arquivo antigo:", err));
+      await updateDoc(doc(db, "mensagens", edicaoMsg.id), { ...dados, anexos, anexo: deleteField(), editadoEm: serverTimestamp() });
+      // Melhor esforço: apaga os arquivos removidos.
+      await Promise.allSettled(descartados.map(deleteAnexo));
       limparFormMensagem();
       mensagemMsg.textContent = "Mensagem atualizada.";
     } else {
-      await addDoc(collection(db, "mensagens"), { ...dados, anexo, createdAt: serverTimestamp() });
+      await addDoc(collection(db, "mensagens"), { ...dados, anexos, createdAt: serverTimestamp() });
       limparFormMensagem();
       mensagemMsg.textContent = "Mensagem enviada.";
     }
@@ -750,13 +1000,14 @@ formMensagem.addEventListener("submit", async (e) => {
 
 async function excluirMensagem(m, btn) {
   const ok = window.confirm(
-    `Excluir a mensagem ${m.gdh || ""}${m.assunto ? ` (${m.assunto})` : ""}? O arquivo anexado também será apagado. Esta ação não pode ser desfeita.`
+    `Excluir a mensagem ${m.gdh || ""}${m.assunto ? ` (${m.assunto})` : ""}? Os arquivos anexados também serão apagados. Esta ação não pode ser desfeita.`
   );
   if (!ok) return;
   btn.disabled = true;
   try {
     await deleteDoc(doc(db, "mensagens", m.id));
-    if (m.anexo) await deleteAnexo(m.anexo).catch((err) => console.error("Erro ao apagar arquivo da mensagem:", err));
+    // Melhor esforço: falha ao apagar um arquivo não impede a exclusão da mensagem.
+    await Promise.allSettled(anexosDe(m).map(deleteAnexo));
   } catch (err) {
     console.error("Erro ao excluir mensagem:", err);
     btn.disabled = false;
@@ -819,13 +1070,14 @@ function rodapeHtml(item, comAcoes) {
   `;
 }
 
-// Resposta de uma célula: texto (para quem, assunto...) e/ou arquivo.
+// Resposta de uma célula: texto (para quem, assunto...) e/ou arquivos.
 function respostaHtml(r, comRemover) {
+  const anexos = anexosDaResposta(r);
   return `
     <div class="resposta">
       ${r.texto ? `<div class="resposta__texto">${escapeHtml(r.texto)}</div>` : ""}
+      ${anexos.length ? anexosHtml(anexos) : ""}
       <div class="resposta__rodape">
-        ${r.arquivoId ? anexoLinkHtml(r) : ""}
         ${r.enviadoEm ? `<span class="resposta__data">enviada ${formatTimestamp(r.enviadoEm)}</span>` : ""}
         ${comRemover ? `<button type="button" class="btn-remover resposta-remover" data-resposta-id="${escapeHtml(idResposta(r))}">remover</button>` : ""}
       </div>
@@ -949,9 +1201,9 @@ function plural(n, singular, pluralTxt) {
 
 const statusFilter = document.getElementById("statusFilter");
 
-// Rascunhos das respostas (texto e arquivo escolhido, ainda não
+// Rascunhos das respostas (texto e arquivos escolhidos, ainda não
 // enviados): sobrevivem às re-renderizações em tempo real.
-const rascunhosResposta = new Map(); // "<pmsId>:<celulaId>" -> { texto, arquivo }
+const rascunhosResposta = new Map(); // "<pmsId>:<celulaId>" -> { texto, arquivos }
 const respostasEnviando = new Set(); // chaves com envio em andamento
 
 function celulaRespondeu(it, celulaId) {
@@ -1023,7 +1275,7 @@ function buildPmsLinha(it) {
     ${cabecalhoHtml(urgenciaPill(it.urgencia) + statusPill(statusPms(it)), it.gdh, it.origem)}
     <div class="injecao-card__resumo lancamento__texto">${escapeHtml(it.resumo || "")}</div>
     <div class="chips">${celulasHtml}</div>
-    ${it.anexo ? `<div class="info-grid">${infoHtml("Arquivo do PMS", anexoLinkHtml(it.anexo))}</div>` : ""}
+    ${anexosDe(it).length ? `<div class="info-grid">${infoAnexosHtml("Arquivo do PMS", "Arquivos do PMS", anexosDe(it))}</div>` : ""}
     ${rodapeHtml(it, true)}
   `;
 
@@ -1034,7 +1286,7 @@ function buildPmsLinha(it) {
 }
 
 // Cartão de um PMS dentro da seção de uma célula: mostra o prazo, as
-// respostas e o envio de resposta dessa célula (texto e/ou arquivo, que
+// respostas e o envio de resposta dessa célula (texto e/ou arquivos, que
 // só são gravados ao clicar em "Enviar resposta").
 function buildInjecaoCard(it, celulaId) {
   const card = document.createElement("article");
@@ -1052,7 +1304,7 @@ function buildInjecaoCard(it, celulaId) {
   const prazo = it.celulas[celulaId].texto;
   const infos =
     (prazo ? infoHtml(`Prazo da ${celula.abrev}`, escapeHtml(prazo)) : "") +
-    (it.anexo ? infoHtml("Arquivo do PMS", anexoLinkHtml(it.anexo)) : "");
+    infoAnexosHtml("Arquivo do PMS", "Arquivos do PMS", anexosDe(it));
 
   const respostas = respostasDaCelula(it, celulaId);
   const chave = `${it.id}:${celulaId}`;
@@ -1069,13 +1321,15 @@ function buildInjecaoCard(it, celulaId) {
         <span class="rotulo">Nova resposta</span>
         <textarea class="resposta-texto" rows="3" data-chave="${chave}"
           placeholder="Para quem:&#10;Assunto:&#10;Outras informações:"></textarea>
-        <div class="resposta-form__acoes">
-          <label class="btn btn--ghost btn--small">
-            Escolher arquivo (DOCX/PDF)
-            <input type="file" class="anexo-picker__input resposta-file" accept="${ANEXO_ACCEPT}">
+        <div class="anexo-picker">
+          <label class="btn btn--ghost btn--small anexo-picker__btn">
+            Escolher arquivos (DOCX/PDF)
+            <input type="file" class="anexo-picker__input resposta-file" accept="${ANEXO_ACCEPT}" multiple>
           </label>
           <span class="anexo-picker__nome resposta-arquivo"></span>
-          <button type="button" class="btn-remover resposta-limpar" hidden>remover</button>
+        </div>
+        <ul class="arquivos arquivos--edicao resposta-lista" hidden></ul>
+        <div class="resposta-form__acoes">
           <button type="button" class="btn btn--primary btn--small resposta-enviar">Enviar resposta</button>
         </div>
         <span class="form-msg resposta-msg"></span>
@@ -1089,16 +1343,16 @@ function buildInjecaoCard(it, celulaId) {
       const resposta = (it.respostas || []).find((r) => idResposta(r) === btn.dataset.respostaId);
       if (!resposta) return;
       const abrev = CELULA_MAP[resposta.celula] ? CELULA_MAP[resposta.celula].abrev : resposta.celula;
-      const qual = resposta.nome ? `a resposta "${resposta.nome}"` : "esta resposta";
+      const anexos = anexosDaResposta(resposta);
+      const qual = !resposta.texto && anexos.length === 1 ? `a resposta "${anexos[0].nome}"` : "esta resposta";
       const ok = window.confirm(`Remover ${qual} da ${abrev}? O PMS volta a ficar pendente para esta célula se não houver outra resposta dela.`);
       if (!ok) return;
       btn.disabled = true;
       try {
         // arrayRemove exige o objeto idêntico ao gravado.
         await updateDoc(doc(db, "injecoes", it.id), { respostas: arrayRemove(resposta) });
-        if (resposta.arquivoId) {
-          await deleteAnexo(resposta).catch((err) => console.error("Erro ao apagar arquivo da resposta:", err));
-        }
+        // Melhor esforço: apaga os arquivos da resposta.
+        await Promise.allSettled(anexos.map(deleteAnexo));
       } catch (err) {
         console.error("Erro ao remover resposta:", err);
         btn.disabled = false;
@@ -1107,25 +1361,39 @@ function buildInjecaoCard(it, celulaId) {
     });
   });
 
-  const rascunho = rascunhosResposta.get(chave) || { texto: "", arquivo: null };
+  const rascunho = rascunhosResposta.get(chave) || { texto: "", arquivos: [] };
+  const respostaForm = card.querySelector(".resposta-form");
   const respostaTexto = card.querySelector(".resposta-texto");
   const respostaFile = card.querySelector(".resposta-file");
-  const arquivoNome = card.querySelector(".resposta-arquivo");
-  const btnLimpar = card.querySelector(".resposta-limpar");
-  const btnEnviar = card.querySelector(".resposta-enviar");
+  const respostaLista = card.querySelector(".resposta-lista");
+  const arquivosInfo = card.querySelector(".resposta-arquivo");
   const respostaMsg = card.querySelector(".resposta-msg");
 
-  function mostrarArquivo() {
-    arquivoNome.textContent = rascunho.arquivo
-      ? `${rascunho.arquivo.name} (${formatBytes(rascunho.arquivo.size)})`
-      : "Nenhum arquivo selecionado";
-    btnLimpar.hidden = !rascunho.arquivo;
+  function mostrarArquivos() {
+    renderListaArquivos(respostaLista, arquivosInfo, rascunho.arquivos.map((f) => ({
+      nome: f.name,
+      tamanho: f.size,
+      remover: () => {
+        rascunho.arquivos = rascunho.arquivos.filter((x) => x !== f);
+        rascunhosResposta.set(chave, rascunho);
+        mostrarArquivos();
+      }
+    })));
+    const cheio = rascunho.arquivos.length >= ANEXOS_MAX;
+    respostaFile.disabled = cheio;
+    respostaFile.closest("label").classList.toggle("is-disabled", cheio);
+  }
+
+  // Durante o envio, nada do formulário pode ser alterado.
+  function travarForm() {
+    respostaForm.querySelectorAll("textarea, input, button").forEach((el) => (el.disabled = true));
+    respostaFile.closest("label").classList.add("is-disabled");
   }
 
   respostaTexto.value = rascunho.texto;
-  mostrarArquivo();
+  mostrarArquivos();
   if (respostasEnviando.has(chave)) {
-    respostaTexto.disabled = btnEnviar.disabled = btnLimpar.disabled = respostaFile.disabled = true;
+    travarForm();
     respostaMsg.textContent = "Enviando resposta...";
   }
 
@@ -1135,47 +1403,39 @@ function buildInjecaoCard(it, celulaId) {
   });
 
   respostaFile.addEventListener("change", () => {
-    const file = respostaFile.files[0];
-    respostaFile.value = "";
-    if (!file) return;
     limparMsg(respostaMsg);
-    const erro = validateAnexo(file);
-    if (erro) return mostrarErro(respostaMsg, erro);
-    rascunho.arquivo = file;
+    const { aceitos, erro } = filtrarArquivos([...respostaFile.files], rascunho.arquivos.length);
+    respostaFile.value = "";
+    rascunho.arquivos = [...rascunho.arquivos, ...aceitos];
     rascunhosResposta.set(chave, rascunho);
-    mostrarArquivo();
+    mostrarArquivos();
+    if (erro) mostrarErro(respostaMsg, erro);
   });
 
-  btnLimpar.addEventListener("click", () => {
-    rascunho.arquivo = null;
-    rascunhosResposta.set(chave, rascunho);
-    mostrarArquivo();
-  });
-
-  btnEnviar.addEventListener("click", async () => {
+  card.querySelector(".resposta-enviar").addEventListener("click", async () => {
     limparMsg(respostaMsg);
     const texto = respostaTexto.value.trim();
-    const arquivo = rascunho.arquivo;
-    if (!texto && !arquivo) {
+    const arquivos = rascunho.arquivos;
+    if (!texto && arquivos.length === 0) {
       mostrarErro(respostaMsg, "Escreva a resposta ou escolha um arquivo.");
       respostaTexto.focus();
       return;
     }
 
     respostasEnviando.add(chave);
-    respostaTexto.disabled = btnEnviar.disabled = btnLimpar.disabled = respostaFile.disabled = true;
+    travarForm();
     respostaMsg.textContent = "Enviando resposta...";
     let aviso = null;
     try {
-      const anexo = arquivo ? await uploadAnexo(arquivo) : {};
+      const anexos = await enviarArquivos(arquivos, respostaMsg);
       rascunhosResposta.delete(chave);
       await updateDoc(doc(db, "injecoes", it.id), {
-        respostas: arrayUnion({ id: crypto.randomUUID(), ...anexo, celula: celulaId, texto, enviadoEm: Date.now() })
+        respostas: arrayUnion({ id: crypto.randomUUID(), celula: celulaId, texto, anexos, enviadoEm: Date.now() })
       });
       aviso = { texto: "Resposta enviada.", erro: false };
     } catch (err) {
       console.error("Erro ao enviar resposta:", err);
-      rascunhosResposta.set(chave, { texto, arquivo });
+      rascunhosResposta.set(chave, { texto, arquivos });
       aviso = { texto: "Erro ao enviar. Tente novamente.", erro: true };
     } finally {
       respostasEnviando.delete(chave);
@@ -1267,7 +1527,7 @@ function buildMensagemCard(m, celulaAtual, comAcoes) {
     <div class="injecao-card__resumo">${escapeHtml(m.assunto || "")}</div>
     ${m.texto ? `<div class="caixa-texto${comAcoes ? " lancamento__texto" : ""}">${escapeHtml(m.texto)}</div>` : ""}
     <div class="info-grid">
-      ${m.anexo ? infoHtml("Arquivo da mensagem", anexoLinkHtml(m.anexo)) : ""}
+      ${infoAnexosHtml("Arquivo da mensagem", "Arquivos da mensagem", anexosDe(m))}
       ${infoHtml("Destinatários", `<div class="chips">${destinosChipsHtml(m, celulaAtual)}</div>`)}
     </div>
     ${rodapeHtml(m, comAcoes)}
@@ -1340,7 +1600,7 @@ function buildKanbanCard(it) {
   card.innerHTML = `
     ${cabecalhoHtml(urgenciaPill(it.urgencia), it.gdh, it.origem)}
     <div class="injecao-card__resumo">${escapeHtml(it.resumo || "")}</div>
-    ${it.anexo ? `<div class="info-grid">${infoHtml("Arquivo do PMS", anexoLinkHtml(it.anexo))}</div>` : ""}
+    ${anexosDe(it).length ? `<div class="info-grid">${infoAnexosHtml("Arquivo do PMS", "Arquivos do PMS", anexosDe(it))}</div>` : ""}
     <div class="bloco">
       <span class="rotulo">Situação por célula · ${qtdRespondidas}/${roteadas.length} responderam</span>
       <div class="kanban-celulas">${celulasHtml}</div>

@@ -125,9 +125,9 @@ usar o painel — não é necessário nenhum cadastro ou login manual.
     d9:   { sel: bool, texto: string },
     d10:  { sel: bool, texto: string }
   },
-  anexo: { nome, arquivoId, tamanho } | null,  // arquivo do PMS
+  anexos: [{ nome, arquivoId, tamanho }, ...],  // arquivos do PMS (até 10)
   respostas: [                                   // respostas das células
-    { nome, arquivoId, tamanho, celula, enviadoEm: number }, ...
+    { id, celula, texto, anexos: [...], enviadoEm: number }, ...
   ],
   createdAt: Timestamp
 }
@@ -148,9 +148,12 @@ arquivos/<id>/partes/<n>  { dados: Bytes }   // fatias de até 900 KB
 ```
 
 Cada documento do Firestore aceita no máximo 1 MiB, por isso o arquivo é
-fatiado. O PMS guarda só `{ nome, arquivoId, tamanho }`. A cota gratuita
-do Firestore é de 1 GiB armazenado e 50 mil leituras/dia — um download de
-um arquivo de 10 MB consome cerca de 13 leituras.
+fatiado. PMS, mensagens e respostas guardam só a lista `anexos` de
+`{ nome, arquivoId, tamanho }` (até 10 arquivos). Registros antigos, com um
+único arquivo (`anexo` no PMS/mensagem, ou `nome`/`arquivoId`/`tamanho`
+direto na resposta), continuam sendo lidos normalmente. A cota gratuita
+do Firestore é de 1 GiB armazenado e 50 mil leituras/dia — baixar ou
+visualizar um arquivo de 10 MB consome cerca de 13 leituras.
 
 ### Coleção `simulas`
 
