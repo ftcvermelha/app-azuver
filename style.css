@@ -1147,6 +1147,50 @@ textarea:disabled { opacity: 0.6; }
   border-left: 1px solid var(--border-soft);
 }
 
+/* Faltam responder: o que ainda está pendente, em destaque no cartão */
+
+.faltam {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--importante-soft);
+  border-left: 3px solid var(--importante);
+  border-radius: var(--radius-sm);
+}
+
+.faltam__titulo { color: var(--importante); }
+
+.faltam__lista {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.faltam__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.faltam__abrev { font-size: 13px; font-weight: 600; color: var(--text); }
+.faltam__prazo { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+
+/* Responderam: siglas e respostas recolhidas */
+
+.responderam { display: flex; flex-direction: column; gap: 10px; }
+
+.responderam__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.responderam__head .rotulo { color: var(--status-pronta); }
+.responderam__toggle { margin-left: auto; white-space: nowrap; }
+
 /* ---------------------------------------------------------------------- */
 /* Visualizador de anexos (janela sobre a tela)                           */
 /* ---------------------------------------------------------------------- */

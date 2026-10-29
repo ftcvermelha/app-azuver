@@ -1571,42 +1571,84 @@ function renderComando() {
   });
 }
 
+// PMS cujo "ver respostas" está aberto: sobrevive às re-renderizações.
+const respostasAbertas = new Set();
+
+// Quadro de uma célula que já respondeu, com prazo e respostas.
+function kanbanCelulaHtml(it, c) {
+  const prazo = it.celulas[c.id].texto;
+  return `
+    <div class="kanban-celula kanban-celula--ok">
+      <div class="kanban-celula__head">
+        <span class="kanban-celula__status">✓</span>
+        <span class="kanban-celula__abrev mono">${c.abrev}</span>
+        <span class="kanban-celula__nome">${escapeHtml(c.nome)}</span>
+        <span class="kanban-celula__estado">Respondeu</span>
+      </div>
+      ${prazo ? `<div class="kanban-celula__prazo"><span class="rotulo">Prazo</span>${escapeHtml(prazo)}</div>` : ""}
+      ${respostasDaCelula(it, c.id).map((r) => respostaHtml(r, false)).join("")}
+    </div>
+  `;
+}
+
+// Cartão do quadro: primeiro, em destaque, as células que ainda faltam
+// responder (com prazo); depois quem já respondeu, com as respostas
+// recolhidas atrás de "ver respostas".
 function buildKanbanCard(it) {
   const card = document.createElement("div");
   card.className = "kanban-card";
   card.dataset.urgencia = it.urgencia;
 
-  // Situação por célula: quem já respondeu (texto e/ou arquivo da resposta)
-  // e quem ainda está pendente.
   const roteadas = celulasRoteadas(it);
-  const qtdRespondidas = roteadas.filter((c) => celulaRespondeu(it, c.id)).length;
-  const celulasHtml = roteadas.map((c) => {
-    const respostas = respostasDaCelula(it, c.id);
-    const respondeu = respostas.length > 0;
-    const prazo = it.celulas[c.id].texto;
-    return `
-      <div class="kanban-celula kanban-celula--${respondeu ? "ok" : "pendente"}">
-        <div class="kanban-celula__head">
-          <span class="kanban-celula__status">${respondeu ? "✓" : "⏳"}</span>
-          <span class="kanban-celula__abrev mono">${c.abrev}</span>
-          <span class="kanban-celula__nome">${escapeHtml(c.nome)}</span>
-          <span class="kanban-celula__estado">${respondeu ? "Respondeu" : "Pendente"}</span>
-        </div>
-        ${prazo ? `<div class="kanban-celula__prazo"><span class="rotulo">Prazo</span>${escapeHtml(prazo)}</div>` : ""}
-        ${respostas.map((r) => respostaHtml(r, false)).join("")}
+  const faltam = roteadas.filter((c) => !celulaRespondeu(it, c.id));
+  const responderam = roteadas.filter((c) => celulaRespondeu(it, c.id));
+  const aberto = respostasAbertas.has(it.id);
+
+  const faltamHtml = faltam.length === 0 ? "" : `
+    <div class="faltam">
+      <span class="rotulo faltam__titulo">⏳ Faltam responder · ${faltam.length} de ${roteadas.length}</span>
+      <div class="faltam__lista">
+        ${faltam.map((c) => {
+          const prazo = it.celulas[c.id].texto;
+          return `
+            <span class="faltam__item" title="${escapeHtml(c.nome)}">
+              <span class="faltam__abrev mono">${c.abrev}</span>
+              <span class="faltam__prazo">${prazo ? `prazo ${escapeHtml(prazo)}` : "sem prazo"}</span>
+            </span>
+          `;
+        }).join("")}
       </div>
-    `;
-  }).join("");
+    </div>
+  `;
+
+  const responderamHtml = responderam.length === 0 ? "" : `
+    <div class="responderam">
+      <div class="responderam__head">
+        <span class="rotulo">✓ Responderam · ${responderam.length} de ${roteadas.length}</span>
+        <span class="chips">${responderam.map((c) => `<span class="chip chip--ok">${c.abrev}</span>`).join("")}</span>
+        <button type="button" class="anexo-acao responderam__toggle" aria-expanded="${aberto}">
+          ${aberto ? "ocultar respostas ▴" : "ver respostas ▾"}
+        </button>
+      </div>
+      ${aberto ? `<div class="kanban-celulas">${responderam.map((c) => kanbanCelulaHtml(it, c)).join("")}</div>` : ""}
+    </div>
+  `;
 
   card.innerHTML = `
     ${cabecalhoHtml(urgenciaPill(it.urgencia), it.gdh, it.origem)}
     <div class="injecao-card__resumo">${escapeHtml(it.resumo || "")}</div>
     ${anexosDe(it).length ? `<div class="info-grid">${infoAnexosHtml("Arquivo do PMS", "Arquivos do PMS", anexosDe(it))}</div>` : ""}
-    <div class="bloco">
-      <span class="rotulo">Situação por célula · ${qtdRespondidas}/${roteadas.length} responderam</span>
-      <div class="kanban-celulas">${celulasHtml}</div>
-    </div>
+    <div class="bloco">${faltamHtml}${responderamHtml}</div>
   `;
+
+  const toggle = card.querySelector(".responderam__toggle");
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      if (aberto) respostasAbertas.delete(it.id);
+      else respostasAbertas.add(it.id);
+      card.replaceWith(buildKanbanCard(it));
+    });
+  }
 
   return card;
 }
