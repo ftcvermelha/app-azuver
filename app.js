@@ -68,15 +68,16 @@ function setConn(state) {
 // ---------------------------------------------------------------------
 
 const CELULAS = [
-  { id: "d1", nome: "D-1 Pessoal", abrev: "D1" },
-  { id: "d2", nome: "D-2 Inteligência", abrev: "D2" },
-  { id: "d3", nome: "D-3 Operações", abrev: "D3" },
-  { id: "d4", nome: "D-4 Logística", abrev: "D4" },
-  { id: "d5", nome: "D-5 Planejamento", abrev: "D5" },
-  { id: "d6", nome: "D-6 C2/Ciber", abrev: "D6" },
-  { id: "d7d8", nome: "D-7/D-8 ComSoc/OpInfo", abrev: "D7/D8" },
-  { id: "d9", nome: "D-9 Assuntos Civis", abrev: "D9" },
-  { id: "d10", nome: "D-10 Finanças", abrev: "D10" }
+  { id: "d1", nome: "E-1 Pessoal", abrev: "E1" },
+  { id: "d2", nome: "E-2 Inteligência", abrev: "E2" },
+  { id: "d3", nome: "E-3 Operações", abrev: "E3" },
+  { id: "d4", nome: "E-4 Logística", abrev: "E4" },
+  { id: "d5", nome: "E-5 Planejamento", abrev: "E5" },
+  { id: "d6", nome: "E-6 C2/Ciber", abrev: "E6" },
+  { id: "d7d8", nome: "E-7/E-8 ComSoc/OpInfo", abrev: "E7/E8" },
+  { id: "d9", nome: "E-9 Assuntos Civis", abrev: "E9" },
+  { id: "d10", nome: "E-10 Finanças", abrev: "E10" },
+  { id: "targeting", nome: "Targeting", abrev: "TGT" }
 ];
 
 const CELULA_MAP = Object.fromEntries(CELULAS.map((c) => [c.id, c]));

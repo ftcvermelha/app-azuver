@@ -929,12 +929,12 @@ textarea:disabled { opacity: 0.6; }
 
 .secoes-grade {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
 }
 
-@media (max-width: 900px) {
-  .secoes-grade { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 1000px) {
+  .secoes-grade { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
   .secoes-grade { grid-template-columns: 1fr; }

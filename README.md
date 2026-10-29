@@ -123,7 +123,8 @@ usar o painel — não é necessário nenhum cadastro ou login manual.
     d6:   { sel: bool, texto: string },
     d7d8: { sel: bool, texto: string },
     d9:   { sel: bool, texto: string },
-    d10:  { sel: bool, texto: string }
+    d10:  { sel: bool, texto: string },
+    targeting: { sel: bool, texto: string }
   },
   anexos: [{ nome, arquivoId, tamanho }, ...],  // arquivos do PMS (até 10)
   respostas: [                                   // respostas das células
@@ -172,15 +173,16 @@ visualizar um arquivo de 10 MB consome cerca de 13 leituras.
 
 | id     | nome                        | abreviação |
 |--------|------------------------------|------------|
-| d1     | D-1 Pessoal                  | D1         |
-| d2     | D-2 Inteligência              | D2         |
-| d3     | D-3 Operações                | D3         |
-| d4     | D-4 Logística                 | D4         |
-| d5     | D-5 Planejamento              | D5         |
-| d6     | D-6 C2/Ciber                   | D6         |
-| d7d8   | D-7/D-8 ComSoc/OpInfo         | D7/D8      |
-| d9     | D-9 Assuntos Civis             | D9         |
-| d10    | D-10 Finanças                  | D10        |
+| d1     | E-1 Pessoal                  | E1         |
+| d2     | E-2 Inteligência              | E2         |
+| d3     | E-3 Operações                | E3         |
+| d4     | E-4 Logística                 | E4         |
+| d5     | E-5 Planejamento              | E5         |
+| d6     | E-6 C2/Ciber                   | E6         |
+| d7d8   | E-7/E-8 ComSoc/OpInfo         | E7/E8      |
+| d9     | E-9 Assuntos Civis             | E9         |
+| d10    | E-10 Finanças                  | E10        |
+| targeting | Targeting                   | TGT        |
 
 ## Telas
 
@@ -213,3 +215,7 @@ sem filtragem. A escolha fica salva no `localStorage` do navegador.
 - Para uso real de estado-maior, revise as regras de segurança do
   Firestore caso deseje restringir a leitura/escrita por outros critérios
   além de "usuário autenticado".
+
+Os ids internos (`d1`…`d10`) vêm da época em que as células se chamavam
+D-1…D-10; foram mantidos para não alterar os dados já gravados — só os
+nomes exibidos passaram a E-1…E-10.
