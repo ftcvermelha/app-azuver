@@ -1276,6 +1276,137 @@ body:has(.visualizador[open]) { overflow: hidden; }
   margin-bottom: 16px !important;
 }
 
+/* Nota no alto (visualização simplificada, planilha cortada) */
+.visualizador__nota {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+/* RTF, ODT, DOC e slides simplificados: folha branca, como no DOCX */
+.visualizador__docs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px;
+}
+.visualizador__folha,
+.slide-simples {
+  padding: 40px 48px;
+  background: #fff;
+  color: #1a1a1a;
+  box-shadow: var(--shadow);
+  font-family: Calibri, Carlito, 'Segoe UI', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.visualizador__folha p,
+.slide-simples p { margin: 0 0 6px; }
+.visualizador__folha :is(h2, h3, h4, h5, h6),
+.slide-simples h3 { margin: 12px 0 6px; line-height: 1.3; }
+.visualizador__folha ul,
+.slide-simples ul { margin: 0 0 6px; padding-left: 24px; }
+.visualizador__folha img,
+.slide-simples img { max-width: 100%; height: auto; }
+.visualizador__folha table,
+.slide-simples table { border-collapse: collapse; margin: 6px 0 12px; }
+.visualizador__folha td,
+.slide-simples td { border: 1px solid #b8b8b8; padding: 4px 6px; vertical-align: top; }
+
+.slides-simples { display: flex; flex-direction: column; gap: 16px; }
+.slide-simples { padding: 28px 36px; }
+.slide-simples__num {
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6b7a86;
+}
+
+/* Planilhas: abas no alto e tabela com rolagem nos dois sentidos */
+.planilha {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+}
+.planilha__abas {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  overflow-x: auto;
+}
+.planilha__abas[hidden] { display: none; }
+.planilha__aba {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.planilha__aba[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.planilha__tabela {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+.planilha__tabela table {
+  border-collapse: collapse;
+  color: #1a1a1a;
+  font-family: Calibri, Carlito, 'Segoe UI', Arial, sans-serif;
+  font-size: 13px;
+}
+.planilha__tabela td {
+  border: 1px solid #d4d4d4;
+  padding: 3px 8px;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.planilha__tabela td[data-t="n"] { text-align: right; }
+
+/* PPTX */
+.visualizador__slides { padding: 16px; }
+/* A biblioteca prende a lista na altura de um slide; aqui ela rola inteira. */
+.visualizador__slides .pptx-preview-wrapper {
+  height: auto !important;
+  overflow: visible !important;
+  background: transparent !important;
+}
+.visualizador__slides .pptx-preview-slide-wrapper {
+  margin-bottom: 16px !important;
+  box-shadow: var(--shadow);
+}
+
+@media (max-width: 560px) {
+  .visualizador__docs { padding: 8px; }
+  .visualizador__folha { padding: 20px 16px; }
+  .slide-simples { padding: 20px 16px; }
+  .planilha { padding: 8px; }
+  .visualizador__slides { padding: 8px; }
+}
+
 @media (max-width: 560px) {
   .visualizador {
     width: 100vw;

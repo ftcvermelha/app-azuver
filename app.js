@@ -191,7 +191,7 @@ function validateRequiredFields(fields) {
 }
 
 // ---------------------------------------------------------------------
-// Anexos (DOCX/PDF) — guardados no próprio Firestore (plano gratuito),
+// Anexos (PDF e formatos do Office/LibreOffice) — guardados no próprio Firestore (plano gratuito),
 // fatiados em partes de até 900 KB, pois cada documento tem limite de 1 MiB:
 //   arquivos/<id>               { nome, tipo, tamanho, partes }
 //   arquivos/<id>/partes/<n>    { dados: Bytes }
@@ -202,11 +202,47 @@ function validateRequiredFields(fields) {
 const ANEXO_MAX_BYTES = 10 * 1024 * 1024; // 10 MB por arquivo
 const ANEXO_PARTE_BYTES = 900 * 1024;
 const ANEXOS_MAX = 10; // por PMS, mensagem ou resposta
-const ANEXO_TIPOS = {
-  pdf: "application/pdf",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+// Extensão aceita → [tipo MIME, leitor usado no "Visualizar"].
+const OOXML = "application/vnd.openxmlformats-officedocument";
+const ODF = "application/vnd.oasis.opendocument";
+const ANEXO_FORMATOS = {
+  pdf: ["application/pdf", "pdf"],
+  doc: ["application/msword", "doc"],
+  dot: ["application/msword", "doc"],
+  docx: [`${OOXML}.wordprocessingml.document`, "docx"],
+  docm: ["application/vnd.ms-word.document.macroEnabled.12", "docx"],
+  dotx: [`${OOXML}.wordprocessingml.template`, "docx"],
+  dotm: ["application/vnd.ms-word.template.macroEnabled.12", "docx"],
+  rtf: ["application/rtf", "rtf"],
+  odt: [`${ODF}.text`, "odt"],
+  ott: [`${ODF}.text-template`, "odt"],
+  xls: ["application/vnd.ms-excel", "planilha"],
+  xlt: ["application/vnd.ms-excel", "planilha"],
+  xlsx: [`${OOXML}.spreadsheetml.sheet`, "planilha"],
+  xlsm: ["application/vnd.ms-excel.sheet.macroEnabled.12", "planilha"],
+  xlsb: ["application/vnd.ms-excel.sheet.binary.macroEnabled.12", "planilha"],
+  xltx: [`${OOXML}.spreadsheetml.template`, "planilha"],
+  xltm: ["application/vnd.ms-excel.template.macroEnabled.12", "planilha"],
+  ods: [`${ODF}.spreadsheet`, "planilha"],
+  ots: [`${ODF}.spreadsheet-template`, "planilha"],
+  csv: ["text/csv", "csv"],
+  ppt: ["application/vnd.ms-powerpoint", "ppt"],
+  pps: ["application/vnd.ms-powerpoint", "ppt"],
+  pot: ["application/vnd.ms-powerpoint", "ppt"],
+  pptx: [`${OOXML}.presentationml.presentation`, "pptx"],
+  pptm: ["application/vnd.ms-powerpoint.presentation.macroEnabled.12", "pptx"],
+  ppsx: [`${OOXML}.presentationml.slideshow`, "pptx"],
+  ppsm: ["application/vnd.ms-powerpoint.slideshow.macroEnabled.12", "pptx"],
+  potx: [`${OOXML}.presentationml.template`, "pptx"],
+  potm: ["application/vnd.ms-powerpoint.template.macroEnabled.12", "pptx"],
+  odp: [`${ODF}.presentation`, "odp"],
+  otp: [`${ODF}.presentation-template`, "odp"]
 };
-const ANEXO_ACCEPT = ".pdf,.docx," + Object.values(ANEXO_TIPOS).join(",");
+const ANEXO_ACCEPT = Object.keys(ANEXO_FORMATOS).map((ext) => `.${ext}`).join(",");
+
+function formatoDe(nome) {
+  return ANEXO_FORMATOS[(nome || "").split(".").pop().toLowerCase()] || null;
+}
 
 // Anexos de um PMS ou mensagem. Os antigos tinham um só, em "anexo".
 function anexosDe(item) {
@@ -221,8 +257,7 @@ function anexosDaResposta(r) {
 
 // Retorna mensagem de erro, ou null se o arquivo é aceitável.
 function validateAnexo(file) {
-  const ext = file.name.split(".").pop().toLowerCase();
-  if (!ANEXO_TIPOS[ext]) return "Apenas arquivos DOCX ou PDF são aceitos.";
+  if (!formatoDe(file.name)) return "Formato não aceito (use PDF ou arquivos do Office/LibreOffice).";
   if (file.size > ANEXO_MAX_BYTES) return "Arquivo maior que 10 MB.";
   return null;
 }
@@ -244,7 +279,6 @@ function filtrarArquivos(files, jaAnexados) {
 }
 
 async function uploadAnexo(file) {
-  const ext = file.name.split(".").pop().toLowerCase();
   const bytes = new Uint8Array(await file.arrayBuffer());
   const partes = Math.max(1, Math.ceil(bytes.length / ANEXO_PARTE_BYTES));
   const arquivoRef = doc(collection(db, "arquivos"));
@@ -256,7 +290,7 @@ async function uploadAnexo(file) {
   // Metadados por último: só existem quando todas as partes já foram gravadas.
   await setDoc(arquivoRef, {
     nome: file.name,
-    tipo: ANEXO_TIPOS[ext],
+    tipo: formatoDe(file.name)[0],
     tamanho: file.size,
     partes,
     createdAt: serverTimestamp()
@@ -281,16 +315,49 @@ async function enviarArquivos(files, msgEl) {
   return anexos;
 }
 
-async function carregarAnexo(arquivoId) {
+// Arquivos já baixados ficam na memória da página (até ANEXO_CACHE_BYTES),
+// para que reabrir ou baixar de novo seja instantâneo.
+const ANEXO_CACHE_BYTES = 80 * 1024 * 1024;
+const anexosCache = new Map(); // arquivoId → Promise<{ nome, tipo, blob }>
+
+function carregarAnexo(arquivoId) {
+  let promessa = anexosCache.get(arquivoId);
+  if (promessa) {
+    anexosCache.delete(arquivoId); // reinserido abaixo: fica como o mais recente
+  } else {
+    promessa = buscarAnexo(arquivoId);
+    promessa.then(limitarCacheAnexos, () => anexosCache.delete(arquivoId));
+  }
+  anexosCache.set(arquivoId, promessa);
+  return promessa;
+}
+
+async function limitarCacheAnexos() {
+  const tamanhos = await Promise.all(
+    [...anexosCache].map(([id, p]) => p.then((a) => [id, a.blob.size], () => [id, 0]))
+  );
+  let total = tamanhos.reduce((soma, [, t]) => soma + t, 0);
+  for (const [id, t] of tamanhos) {
+    if (total <= ANEXO_CACHE_BYTES) break;
+    anexosCache.delete(id); // os mais antigos saem primeiro
+    total -= t;
+  }
+}
+
+async function buscarAnexo(arquivoId) {
   const arquivoRef = doc(db, "arquivos", arquivoId);
-  const meta = await getDoc(arquivoRef);
+  // A primeira parte vem junto com os metadados (quase todo arquivo tem uma só).
+  const [meta, primeira] = await Promise.all([
+    getDoc(arquivoRef),
+    getDoc(doc(arquivoRef, "partes", "0"))
+  ]);
   if (!meta.exists()) throw new Error("Arquivo não encontrado.");
   const { nome, tipo, partes } = meta.data();
 
-  const snaps = await Promise.all(
-    Array.from({ length: partes }, (_, i) => getDoc(doc(arquivoRef, "partes", String(i))))
+  const resto = await Promise.all(
+    Array.from({ length: partes - 1 }, (_, i) => getDoc(doc(arquivoRef, "partes", String(i + 1))))
   );
-  const blob = new Blob(snaps.map((p) => p.data().dados.toUint8Array()), { type: tipo });
+  const blob = new Blob([primeira, ...resto].map((p) => p.data().dados.toUint8Array()), { type: tipo });
   return { nome, tipo, blob };
 }
 
@@ -306,6 +373,7 @@ function salvarBlob(nome, blob) {
 }
 
 async function deleteAnexo(anexo) {
+  anexosCache.delete(anexo.arquivoId);
   const arquivoRef = doc(db, "arquivos", anexo.arquivoId);
   const meta = await getDoc(arquivoRef);
   const partes = meta.exists() ? meta.data().partes : 0;
@@ -376,17 +444,25 @@ document.addEventListener("click", async (e) => {
 
 // ---------------------------------------------------------------------
 // Visualizador de anexos — janela sobre a tela, sem baixar o arquivo.
-// PDF: visualizador do navegador no computador; nos celulares (que não
-// mostram PDF dentro da página) as páginas são desenhadas pelo PDF.js.
-// DOCX: convertido para a tela pelo docx-preview (formatação aproximada).
-// As bibliotecas só são carregadas na primeira visualização.
+// Cada formato tem seu leitor, todos guardados em vendor/ (nada vem de
+// sites externos) e carregados só quando necessários:
+//   PDF: visualizador do navegador no computador; nos celulares (que não
+//        mostram PDF dentro da página) as páginas são desenhadas pelo PDF.js.
+//   DOCX/DOCM/DOTX: docx-preview (formatação aproximada).
+//   Planilhas (XLS, XLSX, ODS, CSV...): SheetJS, uma aba por planilha.
+//   PPTX/PPSX: pptx-preview (aparência aproximada).
+//   RTF: rtf.js.
+//   ODT/ODP: convertidos aqui mesmo (texto, títulos, listas, tabelas e imagens).
+//   DOC/PPT (Office 97–2003): só o texto, lido do arquivo binário.
+// Passar o mouse em "Visualizar" já começa a buscar o arquivo e o leitor.
 // ---------------------------------------------------------------------
 
-const PDFJS_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
-const PDFJS_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
-const JSZIP_URL = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
-const DOCX_PREVIEW_URL = "https://cdn.jsdelivr.net/npm/docx-preview@0.3.5/dist/docx-preview.min.js";
+const VENDOR = new URL("./vendor/", import.meta.url).href;
 const PDF_LARGURA_MAX = 1600; // px do desenho de cada página (memória no celular)
+const PLANILHA_LINHAS_MAX = 2000; // por planilha; o restante fica para o "Baixar"
+const PLANILHA_COLUNAS_MAX = 100;
+const AVISO_SIMPLIFICADO = 'Visualização simplificada. Para ver a formatação original, use "Baixar".';
+const AVISO_SO_TEXTO = 'Formato antigo do Office: aqui aparece só o texto. Para ver a formatação original, use "Baixar".';
 
 const visualizador = document.getElementById("visualizador");
 const visTipo = document.getElementById("visTipo");
@@ -394,10 +470,25 @@ const visNome = document.getElementById("visNome");
 const visBaixar = document.getElementById("visBaixar");
 const visCorpo = document.getElementById("visCorpo");
 
-let visAtual = null; // { token, nome, blob, url } do documento aberto
+let visAtual = null; // { token, nome, blob } do documento aberto
 
 function visAberto(token) {
   return visAtual && visAtual.token === token;
+}
+
+// Endereços temporários de arquivos na memória; liberados ao fechar a janela
+// ou ao abrir outro documento.
+let visUrls = [];
+
+function urlTemporaria(blob) {
+  const url = URL.createObjectURL(blob);
+  visUrls.push(url);
+  return url;
+}
+
+function liberarUrls() {
+  visUrls.forEach((url) => URL.revokeObjectURL(url));
+  visUrls = [];
 }
 
 function usarPdfNativo() {
@@ -426,17 +517,71 @@ function carregarScript(src) {
   });
 }
 
-const carregarPdfJs = carregarUmaVez(async () => {
-  const pdfjs = await import(PDFJS_URL);
-  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-  return pdfjs;
-});
+async function carregarGlobal(nome, arquivo) {
+  if (!window[nome]) await carregarScript(VENDOR + arquivo);
+  return window[nome];
+}
 
-const carregarDocxPreview = carregarUmaVez(async () => {
-  if (!window.JSZip) await carregarScript(JSZIP_URL);
-  if (!window.docx) await carregarScript(DOCX_PREVIEW_URL);
-  return window.docx;
-});
+const carregarJsZip = carregarUmaVez(() => carregarGlobal("JSZip", "jszip.min.js"));
+const carregarSheetJs = carregarUmaVez(() => carregarGlobal("XLSX", "xlsx.full.min.js"));
+
+// Leitor (ver ANEXO_FORMATOS) → biblioteca que ele usa.
+const LEITORES = {
+  pdf: carregarUmaVez(async () => {
+    const pdfjs = await import(VENDOR + "pdf.min.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = VENDOR + "pdf.worker.min.mjs";
+    return pdfjs;
+  }),
+  docx: carregarUmaVez(async () => {
+    await carregarJsZip();
+    return carregarGlobal("docx", "docx-preview.min.js");
+  }),
+  pptx: carregarUmaVez(() => carregarGlobal("pptxPreview", "pptx-preview.umd.js")),
+  rtf: carregarUmaVez(async () => {
+    // SheetJS e rtf.js trazem tabelas de caracteres com os mesmos nomes globais
+    // (cptable, DO_NOT_EXPORT_CODEPAGE). O SheetJS guarda as suas ao carregar;
+    // carregado antes, as globais dele são escondidas para o rtf.js usar as próprias.
+    await carregarSheetJs();
+    if (!window.RTFJS) window.cptable = window.DO_NOT_EXPORT_CODEPAGE = undefined;
+    for (const nome of ["WMFJS", "EMFJS", "RTFJS"]) await carregarGlobal(nome, `${nome}.bundle.min.js`);
+    [window.WMFJS, window.EMFJS, window.RTFJS].forEach((lib) => lib.loggingEnabled(false));
+    return window.RTFJS;
+  }),
+  planilha: carregarSheetJs,
+  csv: carregarSheetJs,
+  doc: carregarSheetJs, // usa o leitor de arquivos binários (CFB) do SheetJS
+  ppt: carregarSheetJs,
+  odt: carregarJsZip,
+  odp: carregarJsZip
+};
+
+// Registros antigos só tinham PDF e DOCX; o nome do arquivo decide o resto.
+function leitorDe(nome, tipo) {
+  const formato = formatoDe(nome);
+  if (formato) return formato[1];
+  return tipo === "application/pdf" ? "pdf" : "docx";
+}
+
+function prepararLeitor(leitor) {
+  if (leitor === "pdf" && usarPdfNativo()) return Promise.resolve(null);
+  return LEITORES[leitor]();
+}
+
+// Links dentro dos documentos abrem em outra aba; endereços que não sejam
+// de páginas ou e-mail (ex.: "javascript:") são desativados.
+function protegerLinks(raiz) {
+  raiz.querySelectorAll("a[href]").forEach((a) => {
+    if (a.getAttribute("href").startsWith("#")) return; // índice interno do documento
+    let protocolo = "";
+    try { protocolo = new URL(a.getAttribute("href"), location.href).protocol; } catch {}
+    if (["http:", "https:", "mailto:"].includes(protocolo)) {
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    } else {
+      a.removeAttribute("href");
+    }
+  });
+}
 
 function avisoVisualizador(texto, erro = false) {
   visCorpo.innerHTML = `<p class="visualizador__aviso${erro ? " error" : ""}">${texto}</p>`;
@@ -444,7 +589,8 @@ function avisoVisualizador(texto, erro = false) {
 
 async function visualizarAnexo(arquivoId, nome) {
   const token = {};
-  visAtual = { token, nome, blob: null, url: null };
+  liberarUrls();
+  visAtual = { token, nome, blob: null };
   visTipo.textContent = extensao(nome);
   visNome.textContent = nome;
   visNome.title = nome;
@@ -453,27 +599,57 @@ async function visualizarAnexo(arquivoId, nome) {
   if (!visualizador.open) visualizador.showModal();
 
   try {
-    const arquivo = await carregarAnexo(arquivoId);
+    // Arquivo e leitor chegam ao mesmo tempo.
+    const leitor = leitorDe(nome);
+    const [arquivo, lib] = await Promise.all([carregarAnexo(arquivoId), prepararLeitor(leitor)]);
     if (!visAberto(token)) return;
     Object.assign(visAtual, { nome: arquivo.nome, blob: arquivo.blob });
     visBaixar.disabled = false;
-    if (arquivo.tipo === ANEXO_TIPOS.pdf) await mostrarPdf(arquivo.blob, token);
-    else await mostrarDocx(arquivo.blob, token);
+    await MOSTRAR[leitor](arquivo.blob, token, lib);
+    if (visAberto(token)) protegerLinks(visCorpo);
   } catch (err) {
     console.error("Erro ao visualizar anexo:", err);
     if (visAberto(token)) avisoVisualizador('Não foi possível abrir o documento aqui. Use "Baixar".', true);
   }
 }
 
-async function mostrarPdf(blob, token) {
-  if (usarPdfNativo()) {
-    visAtual.url = URL.createObjectURL(blob);
+// Começa a buscar arquivo e leitor antes do clique (mouse por cima ou toque).
+document.addEventListener("pointerover", (e) => {
+  const ver = e.target.closest && e.target.closest("[data-visualizar]");
+  if (!ver || ver.dataset.preparado) return;
+  ver.dataset.preparado = "1";
+  carregarAnexo(ver.dataset.visualizar).catch(() => {});
+  prepararLeitor(leitorDe(ver.dataset.nome)).catch(() => {});
+});
+
+// Leitores dos formatos mais comuns já ficam prontos logo após a abertura da página.
+setTimeout(() => {
+  const precarregar = () => [LEITORES.docx, LEITORES.planilha, ...(usarPdfNativo() ? [] : [LEITORES.pdf])]
+    .forEach((carregar) => carregar().catch(() => {}));
+  if (window.requestIdleCallback) requestIdleCallback(precarregar, { timeout: 5000 });
+  else precarregar();
+}, 2000);
+
+// Área com nota no alto (quando houver) e uma "folha" branca para o conteúdo.
+function criarFolha(nota) {
+  visCorpo.innerHTML = `
+    <div class="visualizador__docs">
+      ${nota ? `<p class="visualizador__nota">${nota}</p>` : ""}
+      <article class="visualizador__folha"></article>
+    </div>
+  `;
+  return visCorpo.querySelector(".visualizador__folha");
+}
+
+// ---- PDF -------------------------------------------------------------
+
+async function mostrarPdf(blob, token, pdfjs) {
+  if (!pdfjs) {
     visCorpo.innerHTML = '<iframe class="visualizador__pdf" title="Documento PDF"></iframe>';
-    visCorpo.firstElementChild.src = visAtual.url;
+    visCorpo.firstElementChild.src = urlTemporaria(blob);
     return;
   }
 
-  const pdfjs = await carregarPdfJs();
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
   try {
     if (!visAberto(token)) return;
@@ -495,8 +671,9 @@ async function mostrarPdf(blob, token) {
   }
 }
 
-async function mostrarDocx(blob, token) {
-  const docx = await carregarDocxPreview();
+// ---- Word (DOCX, DOCM, DOTX) e RTF -------------------------------------
+
+async function mostrarDocx(blob, token, docx) {
   if (!visAberto(token)) return;
   visCorpo.innerHTML = '<div class="visualizador__docx"></div>';
   // Tela estreita: o texto se ajusta à largura em vez da folha A4 inteira.
@@ -509,6 +686,518 @@ async function mostrarDocx(blob, token) {
   });
 }
 
+async function mostrarRtf(blob, token, RTFJS) {
+  const documento = new RTFJS.Document(await blob.arrayBuffer(), {});
+  const elementos = await documento.render();
+  if (!visAberto(token)) return;
+  criarFolha().append(...elementos);
+}
+
+// ---- Planilhas (XLS, XLSX, XLSM, XLSB, ODS, CSV...) --------------------
+
+async function mostrarPlanilha(blob, token, XLSX) {
+  const pasta = XLSX.read(new Uint8Array(await blob.arrayBuffer()), {
+    type: "array",
+    cellDates: true,
+    sheetRows: PLANILHA_LINHAS_MAX
+  });
+  mostrarPasta(pasta, token, XLSX);
+}
+
+// CSV costuma vir em UTF-8 ou no padrão do Excel brasileiro (Windows-1252).
+async function mostrarCsv(blob, token, XLSX) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let texto;
+  try {
+    texto = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    texto = new TextDecoder("windows-1252").decode(bytes);
+  }
+  const linhas = lerCsv(texto.replace(/^\ufeff/, ""));
+  const pasta = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(pasta, XLSX.utils.aoa_to_sheet(linhas.slice(0, PLANILHA_LINHAS_MAX)), "CSV");
+  if (linhas.length > PLANILHA_LINHAS_MAX) {
+    pasta.Sheets.CSV["!fullref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: linhas.length - 1, c: 0 } });
+  }
+  mostrarPasta(pasta, token, XLSX);
+}
+
+// Separador (vírgula, ponto e vírgula, tabulação ou barra) é o que mais
+// aparece na primeira linha, fora de aspas.
+function lerCsv(texto) {
+  const primeira = texto.slice(0, texto.search(/\r?\n|$/)).replace(/"[^"]*"/g, "");
+  const sep = [",", ";", "\t", "|"].reduce((melhor, c) =>
+    primeira.split(c).length > primeira.split(melhor).length ? c : melhor, ",");
+
+  const linhas = [];
+  let linha = [];
+  let campo = "";
+  let aspas = false;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (aspas) {
+      if (c === '"' && texto[i + 1] === '"') { campo += '"'; i++; }
+      else if (c === '"') aspas = false;
+      else campo += c;
+    } else if (c === '"') aspas = true;
+    else if (c === sep) { linha.push(campo); campo = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && texto[i + 1] === "\n") i++;
+      linha.push(campo);
+      linhas.push(linha);
+      linha = [];
+      campo = "";
+    } else campo += c;
+  }
+  if (campo || linha.length) linhas.push([...linha, campo]);
+  return linhas;
+}
+
+function mostrarPasta(pasta, token, XLSX) {
+  if (!visAberto(token)) return;
+  const props = (pasta.Workbook && pasta.Workbook.Sheets) || [];
+  const visiveis = pasta.SheetNames.filter((_, i) => !(props[i] && props[i].Hidden));
+  const nomes = visiveis.length ? visiveis : pasta.SheetNames;
+
+  visCorpo.innerHTML = `
+    <div class="planilha">
+      <div class="planilha__abas" role="tablist"${nomes.length > 1 ? "" : " hidden"}></div>
+      <p class="visualizador__nota" hidden></p>
+      <div class="planilha__tabela"></div>
+    </div>
+  `;
+  const abas = visCorpo.querySelector(".planilha__abas");
+  const nota = visCorpo.querySelector(".visualizador__nota");
+  const area = visCorpo.querySelector(".planilha__tabela");
+
+  function abrir(indice) {
+    abas.querySelectorAll(".planilha__aba").forEach((b, i) => b.setAttribute("aria-selected", String(i === indice)));
+    const ws = pasta.Sheets[nomes[indice]];
+    area.scrollTo(0, 0);
+    if (!ws || !ws["!ref"]) {
+      nota.hidden = true;
+      area.innerHTML = '<p class="visualizador__aviso">Planilha vazia.</p>';
+      return;
+    }
+    // Sem as linhas e colunas vazias do fim; planilhas enormes mostram só o
+    // começo, para a tela não travar.
+    const faixa = XLSX.utils.decode_range(ws["!ref"]);
+    const total = XLSX.utils.decode_range(ws["!fullref"] || ws["!ref"]);
+    const fim = ultimaCelulaComDados(ws, XLSX);
+    // Só avisa do corte se os dados chegam até a última linha lida.
+    const cortaLinhas = total.e.r > faixa.e.r && fim.r >= faixa.e.r;
+    faixa.e.r = Math.min(faixa.e.r, fim.r);
+    faixa.e.c = Math.min(faixa.e.c, fim.c);
+    if (faixa.e.r < faixa.s.r || faixa.e.c < faixa.s.c) {
+      nota.hidden = true;
+      area.innerHTML = '<p class="visualizador__aviso">Planilha vazia.</p>';
+      return;
+    }
+    const cortaColunas = faixa.e.c - faixa.s.c >= PLANILHA_COLUNAS_MAX;
+    if (cortaColunas) faixa.e.c = faixa.s.c + PLANILHA_COLUNAS_MAX - 1;
+    nota.hidden = !(cortaColunas || cortaLinhas);
+    nota.textContent = `Mostrando até ${PLANILHA_LINHAS_MAX} linhas e ${PLANILHA_COLUNAS_MAX} colunas. Para ver tudo, use "Baixar".`;
+    const original = ws["!ref"];
+    ws["!ref"] = XLSX.utils.encode_range(faixa);
+    area.innerHTML = XLSX.utils.sheet_to_html(ws, { header: "", footer: "" });
+    ws["!ref"] = original;
+    protegerLinks(area);
+  }
+
+  nomes.forEach((nome, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "planilha__aba";
+    b.setAttribute("role", "tab");
+    b.textContent = nome;
+    b.addEventListener("click", () => abrir(i));
+    abas.appendChild(b);
+  });
+  abrir(0);
+}
+
+// Última linha e coluna com conteúdo (células mescladas contam inteiras).
+function ultimaCelulaComDados(ws, XLSX) {
+  const fim = { r: -1, c: -1 };
+  for (const ref in ws) {
+    if (ref[0] === "!" || ws[ref].v === undefined || ws[ref].v === "") continue;
+    const { r, c } = XLSX.utils.decode_cell(ref);
+    fim.r = Math.max(fim.r, r);
+    fim.c = Math.max(fim.c, c);
+  }
+  (ws["!merges"] || []).forEach((m) => {
+    const inicio = ws[XLSX.utils.encode_cell(m.s)];
+    if (!inicio || inicio.v === undefined || inicio.v === "") return;
+    fim.r = Math.max(fim.r, m.e.r);
+    fim.c = Math.max(fim.c, m.e.c);
+  });
+  return fim;
+}
+
+// ---- Apresentações PPTX/PPSX -------------------------------------------
+
+async function mostrarPptx(blob, token, pptxPreview) {
+  const dados = await blob.arrayBuffer();
+  if (!visAberto(token)) return;
+  visCorpo.innerHTML = '<div class="visualizador__slides"></div>';
+  const area = visCorpo.firstElementChild;
+  const largura = Math.min(area.clientWidth - 32, 1100);
+  const previewer = pptxPreview.init(area, { width: largura, height: Math.round(largura * 9 / 16), mode: "list" });
+  await previewer.preview(dados);
+}
+
+// ---- LibreOffice (ODT, ODP) -------------------------------------------
+// Conversão própria do XML do arquivo: guarda texto, títulos, negrito,
+// itálico, sublinhado, alinhamento, listas, tabelas e imagens.
+
+async function lerOdf(blob, JSZip) {
+  const zip = await JSZip.loadAsync(blob);
+  const xml = async (caminho) => {
+    const arq = zip.file(caminho);
+    return arq ? new DOMParser().parseFromString(await arq.async("string"), "application/xml") : null;
+  };
+  const [conteudo, estilos] = await Promise.all([xml("content.xml"), xml("styles.xml")]);
+  if (!conteudo) throw new Error("Arquivo ODF sem content.xml");
+  return { zip, conteudo, estilo: estilosOdf([estilos, conteudo]) };
+}
+
+// Nome do estilo → CSS (negrito, itálico, sublinhado, alinhamento), seguindo os estilos-pai.
+function estilosOdf(docs) {
+  const estilos = new Map();
+  docs.filter(Boolean).forEach((d) => {
+    for (const s of d.getElementsByTagName("style:style")) {
+      const texto = s.getElementsByTagName("style:text-properties")[0];
+      const paragrafo = s.getElementsByTagName("style:paragraph-properties")[0];
+      const props = {};
+      if (texto) {
+        const peso = texto.getAttribute("fo:font-weight");
+        if (peso) props["font-weight"] = peso === "bold" || Number(peso) >= 600 ? "bold" : "normal";
+        const estiloFonte = texto.getAttribute("fo:font-style");
+        if (estiloFonte) props["font-style"] = estiloFonte === "italic" ? "italic" : "normal";
+        const sublinhado = texto.getAttribute("style:text-underline-style");
+        if (sublinhado) props["text-decoration"] = sublinhado === "none" ? "none" : "underline";
+      }
+      const alinhamento = paragrafo && paragrafo.getAttribute("fo:text-align");
+      if (alinhamento) {
+        props["text-align"] = { start: "left", end: "right" }[alinhamento] || alinhamento;
+      }
+      estilos.set(s.getAttribute("style:name"), { pai: s.getAttribute("style:parent-style-name"), props });
+    }
+  });
+
+  const cache = new Map();
+  return (nome) => {
+    if (!nome) return "";
+    if (!cache.has(nome)) {
+      const props = {};
+      for (let n = nome, passos = 0; n && estilos.has(n) && passos < 10; passos++) {
+        const s = estilos.get(n);
+        Object.entries(s.props).forEach(([k, v]) => { if (!(k in props)) props[k] = v; });
+        n = s.pai;
+      }
+      cache.set(nome, Object.entries(props).map(([k, v]) => `${k}:${v}`).join(";"));
+    }
+    return cache.get(nome);
+  };
+}
+
+const ODF_IGNORADOS = new Set([
+  "office:annotation", "office:annotation-end", "office:forms", "text:note", "text:tracked-changes",
+  "text:sequence-decls", "text:variable-decls", "text:user-field-decls", "text:table-of-content-source",
+  "text:alphabetical-index-source", "text:index-title-template", "text:bookmark-start", "text:bookmark-end",
+  "table:table-column", "table:table-columns", "table:table-header-columns", "table:covered-table-cell",
+  "svg:title", "svg:desc", "presentation:notes", "draw:object", "draw:object-ole", "office:event-listeners"
+]);
+const ODF_IMAGENS = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", webp: "image/webp", bmp: "image/bmp" };
+
+function converterOdf(origem, destino, odf) {
+  for (const filho of origem.childNodes) {
+    const no = converterNoOdf(filho, odf);
+    if (no) destino.append(no);
+  }
+  return destino;
+}
+
+function converterNoOdf(no, odf) {
+  if (no.nodeType === Node.TEXT_NODE) return document.createTextNode(no.nodeValue);
+  if (no.nodeType !== Node.ELEMENT_NODE || ODF_IGNORADOS.has(no.nodeName)) return null;
+
+  const criar = (tag) => {
+    const el = document.createElement(tag);
+    const css = odf.estilo(no.getAttribute("text:style-name") || no.getAttribute("table:style-name"));
+    if (css) el.style.cssText = css;
+    return converterOdf(no, el, odf);
+  };
+
+  switch (no.nodeName) {
+    case "text:h": {
+      const nivel = Math.min(Math.max(Number(no.getAttribute("text:outline-level")) || 1, 1), 5);
+      return criar(`h${nivel + 1}`);
+    }
+    case "text:p": {
+      const p = criar("p");
+      if (!p.textContent.trim() && !p.querySelector("img")) p.append(document.createElement("br"));
+      return p;
+    }
+    case "text:span":
+    case "text:a":
+      return criar("span");
+    case "text:s":
+      return document.createTextNode(" ".repeat(Math.min(Number(no.getAttribute("text:c")) || 1, 100)));
+    case "text:tab":
+      return document.createTextNode("\t");
+    case "text:line-break":
+      return document.createElement("br");
+    case "text:list":
+      return criar("ul");
+    case "text:list-item":
+    case "text:list-header":
+      return criar("li");
+    case "table:table":
+      return criar("table");
+    case "table:table-row":
+      return criar("tr");
+    case "table:table-cell": {
+      const td = criar("td");
+      const colunas = Number(no.getAttribute("table:number-columns-spanned")) || 1;
+      const linhas = Number(no.getAttribute("table:number-rows-spanned")) || 1;
+      if (colunas > 1) td.colSpan = colunas;
+      if (linhas > 1) td.rowSpan = linhas;
+      const repetir = Math.min(Number(no.getAttribute("table:number-columns-repeated")) || 1, 20);
+      if (repetir === 1) return td;
+      const grupo = document.createDocumentFragment();
+      for (let i = 0; i < repetir; i++) grupo.append(td.cloneNode(true));
+      return grupo;
+    }
+    case "draw:frame": {
+      // Imagem com versões alternativas (ex.: SVG + PNG): usa só a primeira.
+      const imagem = [...no.children].find((c) => c.nodeName === "draw:image");
+      return imagem ? converterNoOdf(imagem, odf) : converterOdf(no, document.createDocumentFragment(), odf);
+    }
+    case "draw:image": {
+      const caminho = (no.getAttribute("xlink:href") || "").replace(/^\.\//, "");
+      const tipo = ODF_IMAGENS[caminho.split(".").pop().toLowerCase()];
+      const arq = tipo && odf.zip.file(caminho);
+      if (!arq) return converterOdf(no, document.createDocumentFragment(), odf);
+      const img = document.createElement("img");
+      img.alt = "";
+      odf.imagens.push(arq.async("uint8array").then((bytes) => { img.src = urlTemporaria(new Blob([bytes], { type: tipo })); }));
+      return img;
+    }
+    default:
+      return converterOdf(no, document.createDocumentFragment(), odf);
+  }
+}
+
+async function mostrarOdt(blob, token, JSZip) {
+  const odf = { ...(await lerOdf(blob, JSZip)), imagens: [] };
+  if (!visAberto(token)) return;
+  const corpo = odf.conteudo.getElementsByTagName("office:text")[0];
+  if (!corpo) throw new Error("ODT sem office:text");
+  const folha = converterOdf(corpo, document.createDocumentFragment(), odf);
+  criarFolha(AVISO_SIMPLIFICADO).append(folha);
+  await Promise.allSettled(odf.imagens);
+}
+
+async function mostrarOdp(blob, token, JSZip) {
+  const odf = { ...(await lerOdf(blob, JSZip)), imagens: [] };
+  if (!visAberto(token)) return;
+  const slides = [...odf.conteudo.getElementsByTagName("draw:page")].map((pagina) =>
+    converterOdf(pagina, document.createElement("div"), odf)
+  );
+  mostrarSlidesSimples(slides, AVISO_SIMPLIFICADO);
+  await Promise.allSettled(odf.imagens);
+}
+
+// Slides em sequência, cada um num quadro "Slide N".
+function mostrarSlidesSimples(conteudos, nota) {
+  visCorpo.innerHTML = `
+    <div class="visualizador__docs">
+      <p class="visualizador__nota">${nota}</p>
+      <div class="slides-simples"></div>
+    </div>
+  `;
+  const lista = visCorpo.querySelector(".slides-simples");
+  if (conteudos.length === 0) lista.innerHTML = '<p class="visualizador__aviso">Nenhum texto encontrado.</p>';
+  conteudos.forEach((conteudo, i) => {
+    const slide = document.createElement("section");
+    slide.className = "slide-simples";
+    slide.innerHTML = `<span class="slide-simples__num">Slide ${i + 1}</span>`;
+    slide.append(conteudo);
+    lista.appendChild(slide);
+  });
+}
+
+// ---- Office 97–2003 (DOC, PPT): só o texto -------------------------------
+// Esses arquivos são "pastas" binárias (CFB); o SheetJS abre a pasta e o
+// texto é lido conforme a especificação pública da Microsoft ([MS-DOC], [MS-PPT]).
+
+function fluxoCfb(XLSX, bytes, nome) {
+  const pasta = XLSX.CFB.read(bytes, { type: "array" });
+  const entrada = XLSX.CFB.find(pasta, nome);
+  if (!entrada || !entrada.content) throw new Error(`Arquivo sem o fluxo ${nome}`);
+  return Uint8Array.from(entrada.content);
+}
+
+function visao(bytes) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+function textoDoc(XLSX, bytes) {
+  const wd = fluxoCfb(XLSX, bytes, "WordDocument");
+  const fib = visao(wd);
+  if (fib.getUint16(0, true) !== 0xa5ec) throw new Error("DOC inválido");
+  const opcoes = fib.getUint16(0x0a, true);
+  if (opcoes & 0x0100) throw new Error("DOC protegido por senha");
+  const tabela = fluxoCfb(XLSX, bytes, opcoes & 0x0200 ? "1Table" : "0Table");
+  const t = visao(tabela);
+  const caracteres = fib.getInt32(76, true); // ccpText: só o corpo do documento
+  const fcClx = fib.getUint32(418, true);
+  const lcbClx = fib.getUint32(422, true);
+
+  // Tabela de pedaços: o texto fica em trechos espalhados pelo arquivo.
+  let i = fcClx;
+  while (i < fcClx + lcbClx && tabela[i] === 0x01) i += 3 + t.getInt16(i + 1, true);
+  if (tabela[i] !== 0x02) throw new Error("DOC sem tabela de texto");
+  const lcb = t.getUint32(i + 1, true);
+  const plc = i + 5;
+  const pedacos = (lcb - 4) / 12;
+  const cp1252 = new TextDecoder("windows-1252");
+  const utf16 = new TextDecoder("utf-16le");
+  let texto = "";
+  for (let k = 0; k < pedacos && texto.length < caracteres; k++) {
+    const qtd = t.getInt32(plc + 4 * (k + 1), true) - t.getInt32(plc + 4 * k, true);
+    const fc = t.getUint32(plc + 4 * (pedacos + 1) + 8 * k + 2, true);
+    if (fc & 0x40000000) {
+      const ini = (fc & 0x3fffffff) / 2;
+      texto += cp1252.decode(wd.subarray(ini, ini + qtd));
+    } else {
+      texto += utf16.decode(wd.subarray(fc, fc + 2 * qtd));
+    }
+  }
+  return limparTextoDoc(texto.slice(0, caracteres));
+}
+
+// Campos (índices, numeração...): fica só o resultado; caracteres de controle viram quebras.
+function limparTextoDoc(texto) {
+  let saida = "";
+  const campos = []; // true = já no resultado do campo
+  for (const c of texto) {
+    if (c === "\x13") campos.push(false);
+    else if (c === "\x14") { if (campos.length) campos[campos.length - 1] = true; }
+    else if (c === "\x15") campos.pop();
+    else if (!campos.length || campos[campos.length - 1]) saida += c;
+  }
+  return saida
+    .replace(/\x07\x07/g, "\n") // fim da linha de tabela
+    .replace(/\x07/g, "\t")     // fim de célula
+    .replace(/[\r\x0b\x0c]/g, "\n")
+    .replace(/\x1e/g, "-")
+    .replace(/[\x00-\x08\x0e-\x1f]/g, "");
+}
+
+function slidesPpt(XLSX, bytes) {
+  const fluxo = fluxoCfb(XLSX, bytes, "PowerPoint Document");
+  const v = visao(fluxo);
+  const cp1252 = new TextDecoder("windows-1252");
+  const utf16 = new TextDecoder("utf-16le");
+
+  // Percorre os registros; `modo` "lista" lê a lista de textos dos slides,
+  // "slides" (reserva) lê as caixas de texto dentro de cada slide.
+  function ler(modo) {
+    const slides = [];
+    let atual = null;
+    let titulo = false;
+    (function percorrer(ini, fim, naLista) {
+      for (let i = ini; i + 8 <= fim;) {
+        const verInst = v.getUint16(i, true);
+        const tipo = v.getUint16(i + 2, true);
+        const corpo = i + 8;
+        const prox = corpo + v.getUint32(i + 4, true);
+        if (prox > fim) break;
+        if ((verInst & 0xf) === 0xf) {
+          if (tipo === 0x0ff0) {
+            if (modo === "lista" && verInst >> 4 === 0) percorrer(corpo, prox, true);
+          } else if (tipo === 0x03ee) {
+            if (modo === "slides") {
+              atual = { linhas: [] };
+              slides.push(atual);
+              percorrer(corpo, prox, false);
+              atual = null;
+            }
+          } else if (tipo !== 0x03f0 && tipo !== 0x03f8) {
+            percorrer(corpo, prox, naLista); // anotações (0x03F0) e mestres (0x03F8) ficam de fora
+          }
+        } else if (tipo === 0x03f3 && naLista) {
+          atual = { linhas: [] };
+          slides.push(atual);
+        } else if (tipo === 0x0f9f) {
+          const tipoTexto = v.getUint32(corpo, true);
+          titulo = tipoTexto === 0 || tipoTexto === 6;
+        } else if ((tipo === 0x0fa0 || tipo === 0x0fa8) && atual) {
+          const dados = fluxo.subarray(corpo, prox);
+          const texto = (tipo === 0x0fa0 ? utf16 : cp1252).decode(dados).replace(/[\r\x0b]/g, "\n").trim();
+          if (texto) atual.linhas.push({ titulo, texto });
+        }
+        i = prox;
+      }
+    })(0, fluxo.length, false);
+    return slides;
+  }
+
+  const comTexto = (lista) => lista.some((s) => s.linhas.length);
+  const lista = ler("lista");
+  return comTexto(lista) ? lista : ler("slides").filter((s) => s.linhas.length);
+}
+
+async function mostrarDoc(blob, token, XLSX) {
+  const texto = textoDoc(XLSX, new Uint8Array(await blob.arrayBuffer()));
+  if (!visAberto(token)) return;
+  const folha = criarFolha(AVISO_SO_TEXTO);
+  let tabela = null;
+  texto.split("\n").forEach((linha) => {
+    // Linhas com células (separadas por tabulação) viram linhas de tabela.
+    if (linha.includes("\t")) {
+      tabela ||= folha.appendChild(document.createElement("table"));
+      const tr = tabela.insertRow();
+      linha.split("\t").forEach((celula) => { tr.insertCell().textContent = celula; });
+      return;
+    }
+    tabela = null;
+    const p = folha.appendChild(document.createElement("p"));
+    if (linha.trim()) p.textContent = linha;
+    else p.append(document.createElement("br"));
+  });
+}
+
+async function mostrarPpt(blob, token, XLSX) {
+  const slides = slidesPpt(XLSX, new Uint8Array(await blob.arrayBuffer()));
+  if (!visAberto(token)) return;
+  mostrarSlidesSimples(slides.map((slide) => {
+    const div = document.createElement("div");
+    slide.linhas.forEach(({ titulo, texto }) => {
+      texto.split("\n").forEach((linha) => {
+        const el = div.appendChild(document.createElement(titulo ? "h3" : "p"));
+        el.textContent = linha;
+      });
+    });
+    return div;
+  }), AVISO_SO_TEXTO);
+}
+
+const MOSTRAR = {
+  pdf: mostrarPdf,
+  docx: mostrarDocx,
+  rtf: mostrarRtf,
+  planilha: mostrarPlanilha,
+  csv: mostrarCsv,
+  pptx: mostrarPptx,
+  odt: mostrarOdt,
+  odp: mostrarOdp,
+  doc: mostrarDoc,
+  ppt: mostrarPpt
+};
+
 visBaixar.addEventListener("click", () => {
   if (visAtual && visAtual.blob) salvarBlob(visAtual.nome, visAtual.blob);
 });
@@ -520,8 +1209,10 @@ visualizador.addEventListener("click", (e) => {
   if (e.target === visualizador) visualizador.close();
 });
 
+// O evento chega depois do fechamento: se outro documento já foi aberto, ele fica.
 visualizador.addEventListener("close", () => {
-  if (visAtual && visAtual.url) URL.revokeObjectURL(visAtual.url);
+  if (visualizador.open) return;
+  liberarUrls();
   visAtual = null;
   visCorpo.innerHTML = "";
 });
@@ -556,6 +1247,7 @@ function renderListaArquivos(lista, infoEl, itens) {
 // os arquivos atuais, que podem ser mantidos ou removidos um a um.
 function criarAnexoPicker(prefixo, msgEl) {
   const input = document.getElementById(`${prefixo}Anexo`);
+  input.accept = ANEXO_ACCEPT;
   const infoEl = document.getElementById(`${prefixo}AnexoInfo`);
   const lista = document.getElementById(`${prefixo}AnexoLista`);
   const botao = document.getElementById(`${prefixo}AnexoBtn`);
@@ -1324,7 +2016,7 @@ function buildInjecaoCard(it, celulaId) {
           placeholder="Para quem:&#10;Assunto:&#10;Outras informações:"></textarea>
         <div class="anexo-picker">
           <label class="btn btn--ghost btn--small anexo-picker__btn">
-            Escolher arquivos (DOCX/PDF)
+            Escolher arquivos (até 10 MB cada)
             <input type="file" class="anexo-picker__input resposta-file" accept="${ANEXO_ACCEPT}" multiple>
           </label>
           <span class="anexo-picker__nome resposta-arquivo"></span>
