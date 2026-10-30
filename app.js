@@ -977,7 +977,7 @@ function converterNoOdf(no, odf) {
     case "draw:image": {
       const caminho = (no.getAttribute("xlink:href") || "").replace(/^\.\//, "");
       const tipo = ODF_IMAGENS[caminho.split(".").pop().toLowerCase()];
-      const arq = tipo && odf.zip.file(caminho);
+      const arq = tipo && !odf.semImagens && odf.zip.file(caminho);
       if (!arq) return converterOdf(no, document.createDocumentFragment(), odf);
       const img = document.createElement("img");
       img.alt = "";
@@ -1216,6 +1216,516 @@ visualizador.addEventListener("close", () => {
   visAtual = null;
   visCorpo.innerHTML = "";
 });
+
+// ---------------------------------------------------------------------
+// Compilação das respostas de um PMS pronto num único DOCX editável:
+// cabeçalho do PMS e, por célula, o prazo, o texto das respostas e o
+// texto extraído de cada arquivo anexado (imagens ficam de fora).
+//
+// O conteúdo extraído é uma lista de blocos, montada depois em WordprocessingML:
+//   { tipo: "p", runs: [{ texto, negrito, italico }] }   parágrafo
+//   { tipo: "h", runs }                                   subtítulo dentro do arquivo
+//   { tipo: "tabela", linhas: [["célula", ...], ...] }
+//   { tipo: "aviso", texto }                              observação em itálico
+// ---------------------------------------------------------------------
+
+const paragrafo = (texto, extra = {}) => ({ tipo: "p", runs: [{ texto, ...extra }] });
+const subtitulo = (texto) => ({ tipo: "h", runs: [{ texto }] });
+const aviso = (texto) => ({ tipo: "aviso", texto });
+
+function blocosDeLinhas(texto) {
+  return texto.split("\n").map((linha) => paragrafo(linha));
+}
+
+// Linhas com tabulação (células de tabela no DOC) viram linhas de tabela.
+function blocosDeTextoComTabelas(texto) {
+  const blocos = [];
+  let tabela = null;
+  texto.split("\n").forEach((linha) => {
+    if (linha.includes("\t")) {
+      if (!tabela) blocos.push((tabela = { tipo: "tabela", linhas: [] }));
+      tabela.linhas.push(linha.split("\t"));
+    } else {
+      tabela = null;
+      blocos.push(paragrafo(linha));
+    }
+  });
+  return blocos;
+}
+
+// ---- Word (DOCX, DOCM, DOTX): lido do XML do próprio arquivo ------------
+
+function ligado(rPr, tag) {
+  const el = rPr && [...rPr.children].find((c) => c.nodeName === tag);
+  return !!el && !["0", "false", "off"].includes(el.getAttribute("w:val"));
+}
+
+function paragrafoWord(p) {
+  const estilo = (p.getElementsByTagName("w:pStyle")[0] || { getAttribute: () => "" }).getAttribute("w:val") || "";
+  const runs = [...p.getElementsByTagName("w:r")].map((r) => {
+    const rPr = [...r.children].find((c) => c.nodeName === "w:rPr");
+    let texto = "";
+    for (const c of r.children) {
+      if (c.nodeName === "w:t") texto += c.textContent;
+      else if (c.nodeName === "w:tab") texto += "\t";
+      else if (c.nodeName === "w:br" || c.nodeName === "w:cr") texto += "\n";
+    }
+    return { texto, negrito: ligado(rPr, "w:b"), italico: ligado(rPr, "w:i") };
+  }).filter((r) => r.texto);
+  const titulo = /^(heading|t[ií]tulo|title)/i.test(estilo);
+  return { tipo: titulo ? "h" : "p", runs };
+}
+
+function textoParagrafosWord(el) {
+  return [...el.getElementsByTagName("w:p")].map((p) => paragrafoWord(p).runs.map((r) => r.texto).join("")).join("\n");
+}
+
+function blocosDoCorpoWord(no, blocos) {
+  for (const el of no.children) {
+    if (el.nodeName === "w:p") blocos.push(paragrafoWord(el));
+    else if (el.nodeName === "w:tbl") {
+      blocos.push({
+        tipo: "tabela",
+        linhas: [...el.children].filter((c) => c.nodeName === "w:tr").map((tr) =>
+          [...tr.children].filter((c) => c.nodeName === "w:tc").map(textoParagrafosWord)
+        )
+      });
+    } else if (["w:sdt", "w:sdtContent", "w:customXml", "w:smartTag"].includes(el.nodeName)) {
+      blocosDoCorpoWord(el, blocos);
+    }
+  }
+  return blocos;
+}
+
+async function extrairDocx(blob, JSZip) {
+  const zip = await JSZip.loadAsync(blob);
+  const arq = zip.file("word/document.xml");
+  if (!arq) throw new Error("DOCX sem word/document.xml");
+  const xml = new DOMParser().parseFromString(await arq.async("string"), "application/xml");
+  const corpo = xml.getElementsByTagName("w:body")[0];
+  return corpo ? blocosDoCorpoWord(corpo, []) : [];
+}
+
+// ---- PDF: texto de cada página (PDF digitalizado não tem texto) ---------
+
+async function extrairPdf(blob, pdfjs) {
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+  try {
+    const blocos = [];
+    let caracteres = 0;
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const conteudo = await (await pdf.getPage(n)).getTextContent();
+      let texto = "";
+      conteudo.items.forEach((item) => {
+        if (!("str" in item)) return;
+        texto += item.str + (item.hasEOL ? "\n" : "");
+      });
+      caracteres += texto.trim().length;
+      if (pdf.numPages > 1) blocos.push(subtitulo(`Página ${n}`));
+      // Linhas em branco repetidas viram uma só.
+      blocos.push(...blocosDeLinhas(texto.replace(/\n{3,}/g, "\n\n").trim()));
+    }
+    if (caracteres === 0) {
+      return [aviso("PDF sem texto selecionável (provavelmente digitalizado). Consulte o arquivo no app.")];
+    }
+    return blocos;
+  } finally {
+    pdf.destroy();
+  }
+}
+
+// ---- Planilhas e CSV: uma tabela por planilha ---------------------------
+
+function tabelaDaPlanilha(ws, XLSX) {
+  if (!ws || !ws["!ref"]) return null;
+  const faixa = XLSX.utils.decode_range(ws["!ref"]);
+  const fim = ultimaCelulaComDados(ws, XLSX);
+  faixa.e.r = Math.min(faixa.e.r, fim.r);
+  faixa.e.c = Math.min(faixa.e.c, fim.c, faixa.s.c + PLANILHA_COLUNAS_MAX - 1);
+  if (faixa.e.r < faixa.s.r || faixa.e.c < faixa.s.c) return null;
+  const linhas = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "", blankrows: true, range: faixa });
+  return { tipo: "tabela", linhas: linhas.map((l) => l.map((v) => String(v))) };
+}
+
+async function extrairPlanilha(blob, XLSX) {
+  const pasta = XLSX.read(new Uint8Array(await blob.arrayBuffer()), {
+    type: "array",
+    cellDates: true,
+    sheetRows: PLANILHA_LINHAS_MAX
+  });
+  const props = (pasta.Workbook && pasta.Workbook.Sheets) || [];
+  const blocos = [];
+  pasta.SheetNames.forEach((nome, i) => {
+    if (props[i] && props[i].Hidden) return;
+    const tabela = tabelaDaPlanilha(pasta.Sheets[nome], XLSX);
+    if (!tabela) return;
+    if (pasta.SheetNames.length > 1) blocos.push(subtitulo(`Planilha: ${nome}`));
+    blocos.push(tabela);
+  });
+  return blocos.length ? blocos : [aviso("Planilha vazia.")];
+}
+
+async function extrairCsv(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let texto;
+  try {
+    texto = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    texto = new TextDecoder("windows-1252").decode(bytes);
+  }
+  const linhas = lerCsv(texto.replace(/^﻿/, "")).slice(0, PLANILHA_LINHAS_MAX);
+  return linhas.length ? [{ tipo: "tabela", linhas }] : [aviso("Arquivo vazio.")];
+}
+
+// ---- Apresentações PPTX/PPSX: texto de cada slide, na ordem -------------
+
+function blocosDoSlide(no, blocos) {
+  for (const el of no.children) {
+    if (el.nodeName === "a:tbl") {
+      blocos.push({
+        tipo: "tabela",
+        linhas: [...el.getElementsByTagName("a:tr")].map((tr) =>
+          [...tr.getElementsByTagName("a:tc")].map((tc) =>
+            [...tc.getElementsByTagName("a:p")].map((p) =>
+              [...p.getElementsByTagName("a:t")].map((t) => t.textContent).join("")
+            ).join("\n")
+          )
+        )
+      });
+    } else if (el.nodeName === "a:p") {
+      const runs = [];
+      for (const c of el.children) {
+        if (c.nodeName === "a:r" || c.nodeName === "a:fld") {
+          const rPr = [...c.children].find((x) => x.nodeName === "a:rPr");
+          const t = c.getElementsByTagName("a:t")[0];
+          if (t && t.textContent) {
+            runs.push({
+              texto: t.textContent,
+              negrito: !!rPr && rPr.getAttribute("b") === "1",
+              italico: !!rPr && rPr.getAttribute("i") === "1"
+            });
+          }
+        } else if (c.nodeName === "a:br") runs.push({ texto: "\n" });
+      }
+      if (runs.some((r) => r.texto.trim())) blocos.push({ tipo: "p", runs });
+    } else {
+      blocosDoSlide(el, blocos);
+    }
+  }
+  return blocos;
+}
+
+async function extrairPptx(blob, JSZip) {
+  const zip = await JSZip.loadAsync(blob);
+  const xml = async (caminho) => {
+    const arq = zip.file(caminho);
+    return arq ? new DOMParser().parseFromString(await arq.async("string"), "application/xml") : null;
+  };
+  const [apresentacao, rels] = await Promise.all([xml("ppt/presentation.xml"), xml("ppt/_rels/presentation.xml.rels")]);
+  if (!apresentacao || !rels) throw new Error("PPTX sem presentation.xml");
+  const alvos = Object.fromEntries(
+    [...rels.getElementsByTagName("Relationship")].map((r) => [r.getAttribute("Id"), r.getAttribute("Target")])
+  );
+  const caminhos = [...apresentacao.getElementsByTagName("p:sldId")]
+    .map((s) => alvos[s.getAttribute("r:id")])
+    .filter(Boolean)
+    .map((alvo) => (alvo.startsWith("/") ? alvo.slice(1) : `ppt/${alvo}`));
+  const slides = await Promise.all(caminhos.map(xml));
+
+  const blocos = [];
+  slides.forEach((slide, i) => {
+    blocos.push(subtitulo(`Slide ${i + 1}`));
+    const conteudo = slide && slide.getElementsByTagName("p:cSld")[0];
+    const doSlide = conteudo ? blocosDoSlide(conteudo, []) : [];
+    blocos.push(...(doSlide.length ? doSlide : [aviso("Slide sem texto.")]));
+  });
+  return blocos;
+}
+
+// ---- ODT, ODP e RTF: convertidos para a tela e lidos de volta como blocos --
+
+const TAGS_BLOCO = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "DIV", "SECTION", "UL", "OL", "TABLE"]);
+
+function runsDoHtml(el, raiz, runs = []) {
+  for (const no of el.childNodes) {
+    if (no.nodeType === Node.TEXT_NODE) {
+      if (!no.nodeValue) continue;
+      let negrito = false;
+      let italico = false;
+      for (let a = no.parentElement; a && a !== raiz.parentElement; a = a.parentElement) {
+        negrito ||= ["B", "STRONG"].includes(a.tagName) || a.style.fontWeight === "bold" || Number(a.style.fontWeight) >= 600;
+        italico ||= ["I", "EM"].includes(a.tagName) || a.style.fontStyle === "italic";
+      }
+      runs.push({ texto: no.nodeValue, negrito, italico });
+    } else if (no.nodeName === "BR") {
+      runs.push({ texto: "\n" });
+    } else if (no.nodeType === Node.ELEMENT_NODE) {
+      runsDoHtml(no, raiz, runs);
+    }
+  }
+  return runs;
+}
+
+function blocosDoHtml(el, blocos = []) {
+  if (el.tagName === "TABLE") {
+    blocos.push({
+      tipo: "tabela",
+      linhas: [...el.rows].map((tr) => [...tr.cells].map((td) => td.innerText || td.textContent.trim()))
+    });
+    return blocos;
+  }
+  const temBlocos = [...el.children].some((c) => TAGS_BLOCO.has(c.tagName));
+  if (!temBlocos) {
+    const runs = runsDoHtml(el, el);
+    if (runs.length) blocos.push({ tipo: /^H\d$/.test(el.tagName) ? "h" : "p", runs });
+    return blocos;
+  }
+  for (const no of el.childNodes) {
+    if (no.nodeType === Node.ELEMENT_NODE && TAGS_BLOCO.has(no.tagName)) blocosDoHtml(no, blocos);
+    else if (no.nodeType === Node.ELEMENT_NODE || (no.nodeValue || "").trim()) {
+      const span = document.createElement("span");
+      span.append(no.cloneNode(true));
+      blocos.push({ tipo: "p", runs: runsDoHtml(span, span) });
+    }
+  }
+  return blocos;
+}
+
+async function extrairOdt(blob, JSZip) {
+  const odf = { ...(await lerOdf(blob, JSZip)), imagens: [], semImagens: true };
+  const corpo = odf.conteudo.getElementsByTagName("office:text")[0];
+  if (!corpo) throw new Error("ODT sem office:text");
+  return blocosDoHtml(converterOdf(corpo, document.createElement("div"), odf));
+}
+
+async function extrairOdp(blob, JSZip) {
+  const odf = { ...(await lerOdf(blob, JSZip)), imagens: [], semImagens: true };
+  const blocos = [];
+  [...odf.conteudo.getElementsByTagName("draw:page")].forEach((pagina, i) => {
+    blocos.push(subtitulo(`Slide ${i + 1}`));
+    const doSlide = blocosDoHtml(converterOdf(pagina, document.createElement("div"), odf));
+    blocos.push(...(doSlide.length ? doSlide : [aviso("Slide sem texto.")]));
+  });
+  return blocos;
+}
+
+async function extrairRtf(blob, RTFJS) {
+  const elementos = await new RTFJS.Document(await blob.arrayBuffer(), {}).render();
+  const raiz = document.createElement("div");
+  raiz.append(...elementos);
+  return blocosDoHtml(raiz);
+}
+
+// ---- Office 97–2003 ------------------------------------------------------
+
+async function extrairDoc(blob, XLSX) {
+  return blocosDeTextoComTabelas(textoDoc(XLSX, new Uint8Array(await blob.arrayBuffer())));
+}
+
+async function extrairPpt(blob, XLSX) {
+  const blocos = [];
+  slidesPpt(XLSX, new Uint8Array(await blob.arrayBuffer())).forEach((slide, i) => {
+    blocos.push(subtitulo(`Slide ${i + 1}`));
+    slide.linhas.forEach(({ titulo, texto }) => {
+      texto.split("\n").forEach((linha) => blocos.push(paragrafo(linha, { negrito: titulo })));
+    });
+  });
+  return blocos.length ? blocos : [aviso("Apresentação sem texto.")];
+}
+
+const EXTRAIR = {
+  pdf: extrairPdf,
+  docx: extrairDocx,
+  rtf: extrairRtf,
+  planilha: extrairPlanilha,
+  csv: extrairCsv,
+  pptx: extrairPptx,
+  odt: extrairOdt,
+  odp: extrairOdp,
+  doc: extrairDoc,
+  ppt: extrairPpt
+};
+
+// Leitor usado na extração; o PDF precisa do PDF.js mesmo no computador.
+function leitorDaExtracao(leitor) {
+  if (leitor === "pdf") return LEITORES.pdf();
+  if (leitor === "docx" || leitor === "pptx") return carregarJsZip();
+  return LEITORES[leitor]();
+}
+
+async function extrairAnexo(anexo) {
+  try {
+    const leitor = leitorDe(anexo.nome);
+    const [arquivo, lib] = await Promise.all([carregarAnexo(anexo.arquivoId), leitorDaExtracao(leitor)]);
+    const blocos = await EXTRAIR[leitor](arquivo.blob, lib);
+    return blocos.length ? blocos : [aviso("Arquivo sem texto.")];
+  } catch (err) {
+    console.error("Erro ao extrair texto do anexo:", anexo.nome, err);
+    return [aviso("Não foi possível extrair o texto deste arquivo. Consulte-o no app.")];
+  }
+}
+
+// ---- Montagem do DOCX ----------------------------------------------------
+
+// Caracteres de controle não são aceitos no XML do Word.
+function xmlTexto(texto) {
+  return String(texto)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function runXml({ texto, negrito, italico }) {
+  const props = (negrito ? "<w:b/>" : "") + (italico ? "<w:i/>" : "");
+  const partes = String(texto).split(/(\t|\n)/).map((parte) => {
+    if (parte === "\t") return "<w:tab/>";
+    if (parte === "\n") return "<w:br/>";
+    return parte ? `<w:t xml:space="preserve">${xmlTexto(parte)}</w:t>` : "";
+  }).join("");
+  return `<w:r>${props ? `<w:rPr>${props}</w:rPr>` : ""}${partes}</w:r>`;
+}
+
+function paragrafoXml(runs, estilo) {
+  const pPr = estilo ? `<w:pPr><w:pStyle w:val="${estilo}"/></w:pPr>` : "";
+  return `<w:p>${pPr}${runs.map(runXml).join("")}</w:p>`;
+}
+
+const LARGURA_TEXTO = 9638; // twips: A4 com margens de 2 cm
+
+function tabelaXml(linhas) {
+  const colunas = Math.max(1, ...linhas.map((l) => l.length));
+  const largura = Math.floor(LARGURA_TEXTO / colunas);
+  const celula = (texto) =>
+    `<w:tc><w:tcPr><w:tcW w:w="${largura}" w:type="dxa"/></w:tcPr>${
+      String(texto).split("\n").map((linha) => paragrafoXml([{ texto: linha }], "Tabela")).join("")
+    }</w:tc>`;
+  return `
+    <w:tbl>
+      <w:tblPr><w:tblStyle w:val="GradeTabela"/><w:tblW w:w="${largura * colunas}" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>
+      <w:tblGrid>${`<w:gridCol w:w="${largura}"/>`.repeat(colunas)}</w:tblGrid>
+      ${linhas.map((l) => `<w:tr>${[...l, ...Array(colunas - l.length).fill("")].map(celula).join("")}</w:tr>`).join("")}
+    </w:tbl>
+    <w:p/>`;
+}
+
+function blocoXml(bloco) {
+  if (bloco.tipo === "tabela") return bloco.linhas.length ? tabelaXml(bloco.linhas) : "";
+  if (bloco.tipo === "aviso") return paragrafoXml([{ texto: bloco.texto, italico: true }], "Aviso");
+  if (bloco.tipo === "h") return paragrafoXml(bloco.runs, "Titulo4");
+  return paragrafoXml(bloco.runs);
+}
+
+const ESTILOS_DOCX = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="pt-BR"/></w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr><w:spacing w:after="80" w:line="264" w:lineRule="auto"/></w:pPr></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+  <w:style w:type="paragraph" w:styleId="Titulo"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:spacing w:after="200"/></w:pPr><w:rPr><w:b/><w:sz w:val="36"/><w:szCs w:val="36"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Titulo1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:keepNext/><w:pBdr><w:bottom w:val="single" w:sz="8" w:space="4" w:color="7A1F1F"/></w:pBdr><w:spacing w:before="480" w:after="160"/><w:outlineLvl w:val="0"/></w:pPr>
+    <w:rPr><w:b/><w:color w:val="7A1F1F"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Titulo2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Titulo3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:keepNext/><w:shd w:val="clear" w:color="auto" w:fill="EEF2F4"/><w:spacing w:before="200" w:after="80"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="23"/><w:szCs w:val="23"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Titulo4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>
+    <w:pPr><w:keepNext/><w:spacing w:before="160" w:after="60"/><w:outlineLvl w:val="3"/></w:pPr><w:rPr><w:b/><w:color w:val="44546A"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Aviso"><w:name w:val="Aviso"/><w:basedOn w:val="Normal"/><w:rPr><w:i/><w:color w:val="6B7A86"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Tabela"><w:name w:val="Texto de tabela"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>
+  <w:style w:type="table" w:default="1" w:styleId="TabelaNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblCellMar><w:left w:w="108" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>
+  <w:style w:type="table" w:styleId="GradeTabela"><w:name w:val="Table Grid"/><w:basedOn w:val="TabelaNormal"/>
+    <w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:color="A6A6A6"/><w:left w:val="single" w:sz="4" w:color="A6A6A6"/><w:bottom w:val="single" w:sz="4" w:color="A6A6A6"/><w:right w:val="single" w:sz="4" w:color="A6A6A6"/><w:insideH w:val="single" w:sz="4" w:color="A6A6A6"/><w:insideV w:val="single" w:sz="4" w:color="A6A6A6"/></w:tblBorders></w:tblPr></w:style>
+</w:styles>`;
+
+async function gerarDocx(corpoXml, JSZip) {
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`);
+  zip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`);
+  zip.file("word/_rels/document.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`);
+  zip.file("word/styles.xml", ESTILOS_DOCX);
+  zip.file("word/document.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${corpoXml}
+    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr>
+  </w:body>
+</w:document>`);
+  return zip.generateAsync({ type: "blob", mimeType: ANEXO_FORMATOS.docx[0], compression: "DEFLATE" });
+}
+
+// ---- Documento do PMS ----------------------------------------------------
+
+function linhaRotulo(rotulo, valor) {
+  return paragrafoXml([{ texto: `${rotulo}: `, negrito: true }, { texto: valor || "—" }]);
+}
+
+async function compilarRespostasDocx(it) {
+  const JSZip = await carregarJsZip();
+  const partes = [
+    paragrafoXml([{ texto: "Compilação de respostas — PMS" }], "Titulo"),
+    linhaRotulo("GDH", it.gdh),
+    linhaRotulo("Origem", it.origem),
+    linhaRotulo("Autor", it.autor),
+    linhaRotulo("Urgência", URGENCIA_LABEL[it.urgencia] || it.urgencia),
+    linhaRotulo("Resumo", it.resumo),
+    linhaRotulo("Células", celulasRoteadas(it).map((c) => c.abrev).join(", ")),
+    paragrafoXml([{ texto: `Gerado pelo Painel FTC em ${formatTimestamp(Date.now())}.`, italico: true }], "Aviso")
+  ];
+
+  for (const c of celulasRoteadas(it)) {
+    partes.push(paragrafoXml([{ texto: c.nome }], "Titulo1"));
+    const prazo = it.celulas[c.id].texto;
+    if (prazo) partes.push(linhaRotulo("Prazo", prazo));
+    const respostas = respostasDaCelula(it, c.id);
+    for (const [i, r] of respostas.entries()) {
+      const quando = r.enviadoEm ? ` (enviada ${formatTimestamp(r.enviadoEm)})` : "";
+      partes.push(paragrafoXml([{ texto: `${respostas.length > 1 ? `Resposta ${i + 1}` : "Resposta"}${quando}` }], "Titulo2"));
+      if (r.texto) partes.push(...r.texto.split("\n").map((linha) => paragrafoXml([{ texto: linha }])));
+      for (const anexo of anexosDaResposta(r)) {
+        partes.push(paragrafoXml([{ texto: `Arquivo: ${anexo.nome}` }], "Titulo3"));
+        partes.push(...(await extrairAnexo(anexo)).map(blocoXml));
+      }
+    }
+  }
+  return gerarDocx(partes.join(""), JSZip);
+}
+
+function nomeArquivoCompilado(it) {
+  const gdh = (it.gdh || "sem GDH").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+  return `Respostas PMS ${gdh}.docx`;
+}
+
+async function baixarCompilado(it, botao) {
+  const texto = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Compilando...";
+  try {
+    salvarBlob(nomeArquivoCompilado(it), await compilarRespostasDocx(it));
+  } catch (err) {
+    console.error("Erro ao compilar respostas:", err);
+    window.alert("Erro ao compilar as respostas. Tente novamente.");
+  } finally {
+    botao.disabled = false;
+    botao.textContent = texto;
+  }
+}
 
 // ---------------------------------------------------------------------
 // Seleção de vários arquivos (formulários e respostas): botão de
@@ -1938,7 +2448,7 @@ const controlePms = criarControle({
         return `
           <span class="secao-tile__item">
             <span class="secao-tile__status secao-tile__status--${ok ? "ok" : "pendente"}">${ok ? "✓" : "⏳"}</span>
-            <span class="secao-tile__gdh mono">${escapeHtml(it.gdh || "—")}</span>
+            <span class="secao-tile__gdh mono" title="${escapeHtml(it.gdh || "")}">${escapeHtml(it.gdh || "—")}</span>
             <span class="secao-tile__resumo">${escapeHtml(it.resumo || "")}</span>
           </span>
         `;
@@ -2186,7 +2696,7 @@ const controleMensagens = criarControle({
       alerta: false,
       linhas: ms.map((m) => `
         <span class="secao-tile__item">
-          <span class="secao-tile__gdh mono">${escapeHtml(m.gdh || "—")}</span>
+          <span class="secao-tile__gdh mono" title="${escapeHtml(m.gdh || "")}">${escapeHtml(m.gdh || "—")}</span>
           <span class="secao-tile__resumo">${escapeHtml(m.assunto || "")}</span>
         </span>
       `)
@@ -2322,6 +2832,11 @@ function buildKanbanCard(it) {
           ${aberto ? "ocultar respostas ▴" : "ver respostas ▾"}
         </button>
       </div>
+      ${statusPms(it) === "pronta" ? `
+        <button type="button" class="btn btn--ghost btn--small responderam__compilar" title="Baixa um DOCX editável com o texto das respostas e dos arquivos, por célula">
+          ⤓ Compilar respostas (DOCX)
+        </button>
+      ` : ""}
       ${aberto ? `<div class="kanban-celulas">${responderam.map((c) => kanbanCelulaHtml(it, c)).join("")}</div>` : ""}
     </div>
   `;
@@ -2332,6 +2847,9 @@ function buildKanbanCard(it) {
     ${anexosDe(it).length ? `<div class="info-grid">${infoAnexosHtml("Arquivo do PMS", "Arquivos do PMS", anexosDe(it))}</div>` : ""}
     <div class="bloco">${faltamHtml}${responderamHtml}</div>
   `;
+
+  const compilar = card.querySelector(".responderam__compilar");
+  if (compilar) compilar.addEventListener("click", () => baixarCompilado(it, compilar));
 
   const toggle = card.querySelector(".responderam__toggle");
   if (toggle) {

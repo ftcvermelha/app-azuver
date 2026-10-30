@@ -623,6 +623,8 @@ textarea:disabled { opacity: 0.6; }
 }
 
 .injecao-card__gdh {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--text-dim);
 }
@@ -996,7 +998,17 @@ textarea:disabled { opacity: 0.6; }
 .secao-tile__status--ok { color: var(--status-pronta); }
 .secao-tile__status--pendente { color: var(--importante); }
 
-.secao-tile__gdh { flex: none; font-size: 11.5px; color: var(--text-dim); }
+/* GDH longo (ex.: com observações) encolhe com reticências em vez de
+   empurrar o quadro; o texto inteiro aparece ao passar o mouse. */
+.secao-tile__gdh {
+  flex: none;
+  max-width: 14ch; /* cabe um GDH padrão, ex.: 291604ZOUT26 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
 
 .secao-tile__resumo {
   min-width: 0;
@@ -1190,6 +1202,8 @@ textarea:disabled { opacity: 0.6; }
 
 .responderam__head .rotulo { color: var(--status-pronta); }
 .responderam__toggle { margin-left: auto; white-space: nowrap; }
+/* Só nos PMS prontos: logo abaixo das células que responderam. */
+.responderam__compilar { align-self: flex-start; }
 
 /* ---------------------------------------------------------------------- */
 /* Visualizador de anexos (janela sobre a tela)                           */
