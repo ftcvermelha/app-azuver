@@ -49,6 +49,7 @@
   <button class="tab" data-tab="direx">Controle PMS</button>
   <button class="tab" data-tab="mensagens">Controle Mensagens</button>
   <button class="tab" data-tab="comando">Painel do Comando</button>
+  <button class="tab" data-tab="final">PMS Versão Final</button>
 </nav>
 
 <main id="app">
@@ -252,6 +253,26 @@
         <h3 class="kanban__title">Pronto</h3>
         <div class="kanban__cards" id="kanbanPronta"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ================= TAB: PMS VERSÃO FINAL ================= -->
+  <section class="view" id="view-final">
+    <div class="toolbar">
+      <div class="toolbar__nav">
+        <label class="btn btn--primary btn--small anexo-picker__btn" for="finalArquivo" id="finalArquivoBtn">Carregar versão final</label>
+        <input type="file" id="finalArquivo" class="anexo-picker__input">
+        <h2 class="section-title">PMS Versão Final</h2>
+      </div>
+    </div>
+    <p class="hint final-hint">
+      Um arquivo por PMS, em qualquer formato aceito (até 10 MB); o nome do arquivo identifica o PMS.
+      "Carregar nova versão" substitui o arquivo do cartão. Para editar a várias mãos, cole no cartão
+      o link do documento no Google Drive ou OneDrive.
+    </p>
+    <span id="finalMsg" class="form-msg"></span>
+    <div id="finalLista" class="cards-list">
+      <p class="empty-state">Carregando versões finais...</p>
     </div>
   </section>
 

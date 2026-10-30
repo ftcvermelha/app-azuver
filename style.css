@@ -319,7 +319,7 @@ body {
 /* Campos e botões                                                         */
 /* ---------------------------------------------------------------------- */
 
-select, input[type="text"], textarea {
+select, input[type="text"], input[type="url"], textarea {
   background: var(--bg-input);
   color: var(--text);
   border: 1px solid var(--border);
@@ -1204,6 +1204,36 @@ textarea:disabled { opacity: 0.6; }
 .responderam__toggle { margin-left: auto; white-space: nowrap; }
 /* Só nos PMS prontos: logo abaixo das células que responderam. */
 .responderam__compilar { align-self: flex-start; }
+
+/* ---------------------------------------------------------------------- */
+/* PMS Versão Final                                                        */
+/* ---------------------------------------------------------------------- */
+
+.final-hint { margin: 0 0 12px; max-width: 760px; }
+#finalMsg { display: block; margin-bottom: 10px; }
+#finalMsg:empty { display: none; }
+
+.final-card { display: flex; flex-direction: column; gap: 12px; border-left-color: var(--status-pronta); }
+.final-card .injecao-card__footer { margin-top: 0; }
+
+.final-link {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.final-link a.btn { text-decoration: none; }
+.final-link__onde { font-size: 12px; color: var(--text-dim); }
+.final-link__gerenciar { display: flex; margin-left: auto; }
+.final-link__adicionar { align-self: flex-start; }
+
+.final-link--editando .final-link__input { flex: 1 1 320px; min-width: 0; }
+.final-link__acoes { display: flex; gap: 8px; }
+
+@media (max-width: 560px) {
+  .final-link__gerenciar { margin-left: 0; }
+  .final-card .injecao-card__acoes { margin-left: 0; flex-wrap: wrap; }
+}
 
 /* ---------------------------------------------------------------------- */
 /* Visualizador de anexos (janela sobre a tela)                           */

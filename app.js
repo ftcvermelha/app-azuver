@@ -2864,6 +2864,244 @@ function buildKanbanCard(it) {
 }
 
 // ---------------------------------------------------------------------
+// PMS Versão Final — um cartão por arquivo (o nome identifica o PMS):
+//   versoesFinais/<id>   { anexo: { nome, arquivoId, tamanho }, link,
+//                          createdAt, atualizadoEm }
+// "Carregar nova versão" troca o arquivo do cartão e apaga o anterior.
+// O link opcional leva ao documento no Google Drive/OneDrive, onde a
+// edição a várias mãos acontece.
+// ---------------------------------------------------------------------
+
+const finalLista = document.getElementById("finalLista");
+const finalMsg = document.getElementById("finalMsg");
+const finalArquivo = document.getElementById("finalArquivo");
+const finalArquivoBtn = document.getElementById("finalArquivoBtn");
+finalArquivo.accept = ANEXO_ACCEPT;
+
+let versoesFinaisCache = [];
+// Sobrevivem às re-renderizações do tempo real: link sendo editado
+// (id → texto digitado) e aviso de cada cartão (id → { texto, erro }).
+const linksEditando = new Map();
+const avisosFinal = new Map();
+
+// Só endereços http(s); devolve null se o texto não for um link válido.
+function normalizarLink(texto) {
+  try {
+    const url = new URL(texto.trim());
+    return ["http:", "https:"].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function plataformaDoLink(link) {
+  const host = new URL(link).hostname;
+  if (/(^|\.)google\.com$/.test(host)) return "Google Drive";
+  if (/(^|\.)(sharepoint\.com|onedrive\.live\.com|1drv\.ms|live\.com|office\.com)$/.test(host)) return "OneDrive";
+  return host;
+}
+
+finalArquivo.addEventListener("change", async () => {
+  const file = finalArquivo.files[0];
+  finalArquivo.value = "";
+  if (!file) return;
+  limparMsg(finalMsg);
+  const erro = validateAnexo(file);
+  if (erro) return mostrarErro(finalMsg, `${file.name}: ${erro}`);
+
+  finalArquivo.disabled = true;
+  finalArquivoBtn.classList.add("is-disabled");
+  let anexo = null;
+  try {
+    [anexo] = await enviarArquivos([file], finalMsg);
+    await addDoc(collection(db, "versoesFinais"), {
+      anexo,
+      link: "",
+      createdAt: serverTimestamp(),
+      atualizadoEm: serverTimestamp()
+    });
+    finalMsg.textContent = "Versão final carregada.";
+  } catch (err) {
+    console.error("Erro ao carregar versão final:", err);
+    if (anexo) await deleteAnexo(anexo).catch(() => {});
+    mostrarErro(finalMsg, "Erro ao carregar. Tente novamente.");
+  } finally {
+    finalArquivo.disabled = false;
+    finalArquivoBtn.classList.remove("is-disabled");
+  }
+});
+
+async function substituirVersaoFinal(v, file) {
+  const erro = validateAnexo(file);
+  if (erro) {
+    avisosFinal.set(v.id, { texto: `${file.name}: ${erro}`, erro: true });
+    return renderVersoesFinais();
+  }
+  avisosFinal.set(v.id, { texto: "Enviando nova versão...", erro: false, enviando: true });
+  renderVersoesFinais();
+  let novo = null;
+  try {
+    novo = await uploadAnexo(file);
+    await updateDoc(doc(db, "versoesFinais", v.id), { anexo: novo, atualizadoEm: serverTimestamp() });
+    avisosFinal.set(v.id, { texto: "Nova versão carregada; a anterior foi apagada.", erro: false });
+    setTimeout(() => {
+      if (avisosFinal.get(v.id) && !avisosFinal.get(v.id).erro) {
+        avisosFinal.delete(v.id);
+        renderVersoesFinais();
+      }
+    }, 6000);
+    // Melhor esforço: o cartão já aponta para o arquivo novo.
+    await deleteAnexo(v.anexo).catch((err) => console.error("Erro ao apagar versão anterior:", err));
+  } catch (err) {
+    console.error("Erro ao carregar nova versão:", err);
+    if (novo) await deleteAnexo(novo).catch(() => {});
+    avisosFinal.set(v.id, { texto: "Erro ao carregar a nova versão. Tente novamente.", erro: true });
+  }
+  renderVersoesFinais();
+}
+
+async function salvarLinkFinal(v, texto) {
+  const link = texto.trim() ? normalizarLink(texto) : "";
+  if (link === null) {
+    avisosFinal.set(v.id, { texto: "Link inválido: cole o endereço completo, começando com https://", erro: true });
+    return renderVersoesFinais();
+  }
+  try {
+    await updateDoc(doc(db, "versoesFinais", v.id), { link });
+    linksEditando.delete(v.id);
+    avisosFinal.delete(v.id);
+  } catch (err) {
+    console.error("Erro ao salvar link:", err);
+    avisosFinal.set(v.id, { texto: "Erro ao salvar o link. Tente novamente.", erro: true });
+  }
+  renderVersoesFinais();
+}
+
+async function excluirVersaoFinal(v, btn) {
+  const ok = window.confirm(`Excluir a versão final "${v.anexo.nome}"? O arquivo será apagado. Esta ação não pode ser desfeita.`);
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    await deleteDoc(doc(db, "versoesFinais", v.id));
+    await deleteAnexo(v.anexo).catch((err) => console.error("Erro ao apagar arquivo:", err));
+  } catch (err) {
+    console.error("Erro ao excluir versão final:", err);
+    btn.disabled = false;
+    window.alert("Erro ao excluir. Tente novamente.");
+  }
+}
+
+function linkFinalHtml(v) {
+  if (linksEditando.has(v.id)) {
+    return `
+      <div class="final-link final-link--editando">
+        <input type="url" class="final-link__input" placeholder="https://docs.google.com/... ou https://onedrive.live.com/..."
+          value="${escapeHtml(linksEditando.get(v.id))}" aria-label="Link do documento no Google Drive ou OneDrive">
+        <span class="final-link__acoes">
+          <button type="button" class="btn btn--primary btn--small final-link__salvar">Salvar link</button>
+          <button type="button" class="btn btn--ghost btn--small final-link__cancelar">Cancelar</button>
+        </span>
+      </div>
+    `;
+  }
+  if (!v.link) {
+    return `<button type="button" class="anexo-acao final-link__adicionar">+ Adicionar link para editar on-line (Google Drive / OneDrive)</button>`;
+  }
+  return `
+    <div class="final-link">
+      <a class="btn btn--primary btn--small" href="${escapeHtml(v.link)}" target="_blank" rel="noopener noreferrer">Editar on-line ↗</a>
+      <span class="final-link__onde">no ${escapeHtml(plataformaDoLink(v.link))}</span>
+      <span class="final-link__gerenciar">
+        <button type="button" class="anexo-acao final-link__alterar">alterar link</button>
+        <button type="button" class="anexo-acao final-link__remover">remover link</button>
+      </span>
+    </div>
+  `;
+}
+
+function buildVersaoFinalCard(v) {
+  const card = document.createElement("article");
+  card.className = "injecao-card final-card";
+  const aviso = avisosFinal.get(v.id);
+  const atualizado = v.atualizadoEm && v.createdAt && v.atualizadoEm.toMillis && v.createdAt.toMillis &&
+    v.atualizadoEm.toMillis() - v.createdAt.toMillis() > 1000;
+
+  card.innerHTML = `
+    ${anexosHtml([v.anexo])}
+    ${linkFinalHtml(v)}
+    ${aviso ? `<span class="form-msg${aviso.erro ? " error" : ""}">${escapeHtml(aviso.texto)}</span>` : ""}
+    <div class="injecao-card__footer">
+      <span class="injecao-card__autor">
+        carregado ${formatTimestamp(v.createdAt)}${atualizado ? ` · nova versão ${formatTimestamp(v.atualizadoEm)}` : ""}
+      </span>
+      <span class="injecao-card__acoes">
+        <label class="btn btn--ghost btn--small anexo-picker__btn${aviso && aviso.enviando ? " is-disabled" : ""}">
+          Carregar nova versão
+          <input type="file" class="anexo-picker__input final-nova" accept="${ANEXO_ACCEPT}"${aviso && aviso.enviando ? " disabled" : ""}>
+        </label>
+        <button type="button" class="btn btn--danger-ghost btn--small btn-excluir">Excluir</button>
+      </span>
+    </div>
+  `;
+
+  const on = (seletor, evento, fn) => {
+    const el = card.querySelector(seletor);
+    if (el) el.addEventListener(evento, fn);
+  };
+  on(".final-nova", "change", (e) => {
+    const file = e.target.files[0];
+    if (file) substituirVersaoFinal(v, file);
+  });
+  on(".final-link__adicionar", "click", () => {
+    linksEditando.set(v.id, "");
+    renderVersoesFinais();
+    finalLista.querySelector(`[data-id="${v.id}"] .final-link__input`).focus();
+  });
+  on(".final-link__alterar", "click", () => {
+    linksEditando.set(v.id, v.link);
+    renderVersoesFinais();
+    finalLista.querySelector(`[data-id="${v.id}"] .final-link__input`).focus();
+  });
+  on(".final-link__remover", "click", () => salvarLinkFinal(v, ""));
+  on(".final-link__input", "input", (e) => linksEditando.set(v.id, e.target.value));
+  on(".final-link__input", "keydown", (e) => {
+    if (e.key === "Enter") salvarLinkFinal(v, e.target.value);
+    if (e.key === "Escape") card.querySelector(".final-link__cancelar").click();
+  });
+  on(".final-link__salvar", "click", () => salvarLinkFinal(v, card.querySelector(".final-link__input").value));
+  on(".final-link__cancelar", "click", () => {
+    linksEditando.delete(v.id);
+    avisosFinal.delete(v.id);
+    renderVersoesFinais();
+  });
+  const btnExcluir = card.querySelector(".btn-excluir");
+  btnExcluir.addEventListener("click", () => excluirVersaoFinal(v, btnExcluir));
+
+  card.dataset.id = v.id;
+  return card;
+}
+
+function renderVersoesFinais() {
+  // O campo de link em edição mantém o foco e o cursor após o tempo real.
+  const ativo = document.activeElement;
+  const focoId = ativo && ativo.classList.contains("final-link__input") ? ativo.closest(".final-card").dataset.id : null;
+  const cursor = focoId ? ativo.selectionStart : null;
+
+  finalLista.innerHTML = "";
+  if (versoesFinaisCache.length === 0) {
+    finalLista.innerHTML = '<p class="empty-state">Nenhuma versão final carregada.</p>';
+    return;
+  }
+  versoesFinaisCache.forEach((v) => finalLista.appendChild(buildVersaoFinalCard(v)));
+
+  const campo = focoId && finalLista.querySelector(`[data-id="${focoId}"] .final-link__input`);
+  if (campo) {
+    campo.focus();
+    campo.setSelectionRange(cursor, cursor);
+  }
+}
+
+// ---------------------------------------------------------------------
 // Listeners Firestore (tempo real)
 // ---------------------------------------------------------------------
 
@@ -2896,6 +3134,19 @@ function startListeners() {
     },
     (err) => {
       console.error("Erro no listener de mensagens:", err);
+      setConn("offline");
+    }
+  );
+
+  const versoesFinaisQuery = query(collection(db, "versoesFinais"), orderBy("atualizadoEm", "desc"));
+  onSnapshot(
+    versoesFinaisQuery,
+    (snapshot) => {
+      versoesFinaisCache = snapshot.docs.map((d) => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) }));
+      renderVersoesFinais();
+    },
+    (err) => {
+      console.error("Erro no listener de versões finais:", err);
       setConn("offline");
     }
   );
