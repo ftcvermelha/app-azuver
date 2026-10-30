@@ -299,6 +299,7 @@ body {
 .toolbar__nav .section-title { margin: 0; }
 
 .toolbar__filters { display: flex; align-items: center; gap: 8px; }
+.toolbar__filters[hidden] { display: none; }
 .toolbar__label {
   font-size: 11px;
   text-transform: uppercase;
@@ -613,6 +614,42 @@ textarea:disabled { opacity: 0.6; }
 [data-urgencia="importante"] { border-left-color: var(--importante); }
 [data-urgencia="informativo"] { border-left-color: var(--informativo); }
 .mensagem-card { border-left-color: var(--accent); }
+.mensagem-card--lida {
+  border-left-color: var(--status-pronta);
+  background: linear-gradient(var(--status-pronta-soft), var(--status-pronta-soft)), var(--bg-card);
+}
+
+/* Caixinha "Lida" no cabeçalho da mensagem (marcação manual da seção) */
+.lida-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 3px 9px 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.injecao-card__origem + .lida-check { margin-left: 0; }
+.lida-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--status-pronta);
+  cursor: pointer;
+}
+.lida-check:has(input:checked) {
+  border-color: var(--status-pronta);
+  color: var(--status-pronta);
+  background: var(--status-pronta-soft);
+}
+.lida-check:has(input:disabled) { opacity: 0.6; cursor: progress; }
 
 .injecao-card__head {
   display: flex;

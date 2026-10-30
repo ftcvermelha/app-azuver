@@ -2329,6 +2329,7 @@ function criarControle(cfg) {
     titulo.textContent =
       modo === "lista" ? cfg.tituloLista :
       modo === "secao" ? `${cfg.titulo} · ${CELULA_MAP[celula].nome}` : cfg.titulo;
+    if (cfg.aoRenderizar) cfg.aoRenderizar(modo, celula);
 
     // Preserva o foco e o cursor de quem está escrevendo numa caixa de texto.
     const ativo = document.activeElement;
@@ -2674,8 +2675,35 @@ function escapeHtml(str) {
 // "Listar Mensagens".
 // ---------------------------------------------------------------------
 
+const leituraFilter = document.getElementById("leituraFilter");
+const msgsFiltros = document.getElementById("msgsFiltros");
+const LEITURA_LABEL = { todas: "Todas", "nao-lidas": "Não lidas", lidas: "Lidas" };
+
 function mensagensDaCelula(celulaId) {
   return mensagensCache.filter((m) => (m.destinos || []).includes(celulaId));
+}
+
+// Leitura marcada à mão por cada seção: { lidas: { <celulaId>: true } }.
+function mensagemLida(m, celulaId) {
+  return !!(m.lidas && m.lidas[celulaId]);
+}
+
+function mensagensDaCelulaFiltradas(celulaId) {
+  const ms = mensagensDaCelula(celulaId);
+  if (leituraFilter.value === "todas") return ms;
+  const querLidas = leituraFilter.value === "lidas";
+  return ms.filter((m) => mensagemLida(m, celulaId) === querLidas);
+}
+
+// Contagens no próprio filtro quando uma seção está aberta.
+function atualizarFiltroLeitura(modo, celula) {
+  msgsFiltros.hidden = modo === "lista";
+  const ms = modo === "secao" ? mensagensDaCelula(celula) : null;
+  const lidas = ms ? ms.filter((m) => mensagemLida(m, celula)).length : 0;
+  const contagem = ms ? { todas: ms.length, "nao-lidas": ms.length - lidas, lidas } : null;
+  Array.from(leituraFilter.options).forEach((o) => {
+    o.textContent = contagem ? `${LEITURA_LABEL[o.value]} (${contagem[o.value]})` : LEITURA_LABEL[o.value];
+  });
 }
 
 const controleMensagens = criarControle({
@@ -2683,26 +2711,50 @@ const controleMensagens = criarControle({
   titulo: "Controle Mensagens",
   tituloLista: "Controle Mensagens · Mensagens lançadas",
   vazioTile: "Nenhuma mensagem",
-  vazioSecao: "Nenhuma mensagem para esta seção.",
+  vazioSecao: "Nenhuma mensagem desta seção para este filtro.",
   vazioLista: "Nenhuma mensagem registrada.",
-  itensDaCelula: mensagensDaCelula,
+  itensDaCelula: mensagensDaCelulaFiltradas,
   cardSecao: (m, celulaId) => buildMensagemCard(m, celulaId, false),
   itensLista: () => mensagensCache,
   linhaLista: (m) => buildMensagemCard(m, null, true),
+  aoRenderizar: atualizarFiltroLeitura,
   tile: (celulaId) => {
     const ms = mensagensDaCelula(celulaId);
+    const naoLidas = ms.filter((m) => !mensagemLida(m, celulaId)).length;
     return {
-      contagem: plural(ms.length, "mensagem", "mensagens"),
-      alerta: false,
-      linhas: ms.map((m) => `
-        <span class="secao-tile__item">
-          <span class="secao-tile__gdh mono" title="${escapeHtml(m.gdh || "")}">${escapeHtml(m.gdh || "—")}</span>
-          <span class="secao-tile__resumo">${escapeHtml(m.assunto || "")}</span>
-        </span>
-      `)
+      contagem: ms.length === 0
+        ? plural(0, "mensagem", "mensagens")
+        : `${plural(ms.length, "mensagem", "mensagens")} · ${plural(naoLidas, "não lida", "não lidas")}`,
+      alerta: naoLidas > 0,
+      linhas: mensagensDaCelulaFiltradas(celulaId).map((m) => {
+        const lida = mensagemLida(m, celulaId);
+        return `
+          <span class="secao-tile__item">
+            <span class="secao-tile__status secao-tile__status--${lida ? "ok" : "pendente"}" title="${lida ? "Lida" : "Não lida"}">${lida ? "✓" : "●"}</span>
+            <span class="secao-tile__gdh mono" title="${escapeHtml(m.gdh || "")}">${escapeHtml(m.gdh || "—")}</span>
+            <span class="secao-tile__resumo">${escapeHtml(m.assunto || "")}</span>
+          </span>
+        `;
+      })
     };
   }
 });
+
+leituraFilter.addEventListener("change", renderMensagens);
+
+async function marcarLeitura(m, celulaId, lida, caixa) {
+  caixa.disabled = true;
+  try {
+    await updateDoc(doc(db, "mensagens", m.id), {
+      [`lidas.${celulaId}`]: lida ? true : deleteField()
+    });
+  } catch (err) {
+    console.error("Erro ao marcar leitura:", err);
+    caixa.checked = !lida;
+    caixa.disabled = false;
+    window.alert("Erro ao marcar leitura. Tente novamente.");
+  }
+}
 
 function renderMensagens() {
   controleMensagens.render();
@@ -2719,11 +2771,12 @@ function destinosChipsHtml(m, celulaAtual) {
     .join("");
 }
 
-// Cartão de mensagem. Na seção é só consulta; no "Listar Mensagens"
-// (comAcoes) ganha Editar/Excluir.
+// Cartão de mensagem. Na seção a única ação é marcar como lida; no
+// "Listar Mensagens" (comAcoes) ganha Editar/Excluir.
 function buildMensagemCard(m, celulaAtual, comAcoes) {
   const card = document.createElement("article");
-  card.className = "injecao-card mensagem-card";
+  const lida = celulaAtual ? mensagemLida(m, celulaAtual) : false;
+  card.className = `injecao-card mensagem-card${lida ? " mensagem-card--lida" : ""}`;
 
   card.innerHTML = `
     ${cabecalhoHtml('<span class="pill pill--mensagem">Mensagem</span>', m.gdh, m.origem)}
@@ -2735,6 +2788,17 @@ function buildMensagemCard(m, celulaAtual, comAcoes) {
     </div>
     ${rodapeHtml(m, comAcoes)}
   `;
+
+  if (celulaAtual) {
+    card.querySelector(".injecao-card__head").insertAdjacentHTML("beforeend", `
+      <label class="lida-check" title="Marque quando esta seção tiver lido a mensagem">
+        <input type="checkbox" ${lida ? "checked" : ""}>
+        <span>${lida ? "✓ Lida" : "Lida"}</span>
+      </label>
+    `);
+    const caixa = card.querySelector(".lida-check input");
+    caixa.addEventListener("change", () => marcarLeitura(m, celulaAtual, caixa.checked, caixa));
+  }
 
   if (comAcoes) {
     card.querySelector(".btn-editar").addEventListener("click", () => iniciarEdicaoMensagem(m));

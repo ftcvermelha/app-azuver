@@ -219,6 +219,14 @@
         <button type="button" id="msgsBtnVoltar" class="btn btn--ghost btn--small" hidden>← Voltar às seções</button>
         <h2 class="section-title" id="msgsTitulo">Controle Mensagens</h2>
       </div>
+      <div class="toolbar__filters" id="msgsFiltros">
+        <label for="leituraFilter" class="toolbar__label">Leitura</label>
+        <select id="leituraFilter" class="select-compact">
+          <option value="todas">Todas</option>
+          <option value="nao-lidas">Não lidas</option>
+          <option value="lidas">Lidas</option>
+        </select>
+      </div>
     </div>
     <div id="msgsConteudo">
       <p class="empty-state">Carregando mensagens...</p>
